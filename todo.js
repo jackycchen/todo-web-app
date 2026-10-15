@@ -16,7 +16,8 @@
   var form = document.getElementById("todo-form");
   var input = document.getElementById("todo-input");
   var list = document.getElementById("todo-list");
-  var summary = document.getElementById("summary");
+  var statsCompleted = document.getElementById("stats-completed");
+  var statsTotal = document.getElementById("stats-total");
   var emptyState = document.getElementById("empty-state");
   var filterButtons = document.querySelectorAll(".filter-btn");
 
@@ -90,8 +91,9 @@
   }
 
   function renderSummary() {
-    var activeCount = todos.filter(function (t) { return !t.completed; }).length;
-    summary.textContent = "共 " + todos.length + " 项,未完成 " + activeCount + " 项";
+    var completedCount = todos.filter(function (t) { return t.completed; }).length;
+    statsCompleted.textContent = completedCount;
+    statsTotal.textContent = todos.length;
     emptyState.hidden = todos.length !== 0;
   }
 

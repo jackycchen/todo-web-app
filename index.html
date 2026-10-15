@@ -10,7 +10,11 @@
   <main class="app">
     <header class="app-header">
       <h1>待办清单</h1>
-      <p class="app-subtitle" id="summary">共 0 项,未完成 0 项</p>
+      <div class="stats-bar" role="status" aria-live="polite">
+        <span class="stats-text">
+          已完成 <strong id="stats-completed">0</strong> 项 / 共 <strong id="stats-total">0</strong> 项
+        </span>
+      </div>
     </header>
 
     <form id="todo-form" class="todo-form" autocomplete="off">

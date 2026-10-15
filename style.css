@@ -44,10 +44,25 @@ body {
   letter-spacing: 1px;
 }
 
-.app-subtitle {
-  margin-top: 4px;
-  font-size: 13px;
-  color: var(--text-muted);
+/* 统计条 */
+.stats-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 16px;
+  padding: 8px 20px;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: var(--shadow);
+}
+
+.stats-text strong {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--primary);
 }
 
 /* 输入区 */
