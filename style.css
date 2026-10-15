@@ -1,5 +1,6 @@
 :root {
   --bg: #f4f6fa;
+  --bg-accent: #eef2ff;
   --card-bg: #ffffff;
   --primary: #4f6ef7;
   --primary-hover: #3d5be5;
@@ -8,8 +9,43 @@
   --border: #e6e9f0;
   --danger: #e5484d;
   --danger-bg: #fdecec;
+  --focus-ring: rgba(79, 110, 247, 0.15);
   --shadow: 0 10px 30px rgba(43, 48, 64, 0.08);
   --radius: 12px;
+}
+
+/* 深色配色:手动选择为深色(优先级最高) */
+:root[data-theme="dark"] {
+  --bg: #1b1e2b;
+  --bg-accent: #252a3f;
+  --card-bg: #262b3d;
+  --primary: #6c8bff;
+  --primary-hover: #8aa2ff;
+  --text: #e6e9f2;
+  --text-muted: #9aa2bc;
+  --border: #3a3f55;
+  --danger: #ff7378;
+  --danger-bg: #462b31;
+  --focus-ring: rgba(108, 139, 255, 0.25);
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+
+/* 深色配色:未手动选择时跟随系统偏好 */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --bg: #1b1e2b;
+    --bg-accent: #252a3f;
+    --card-bg: #262b3d;
+    --primary: #6c8bff;
+    --primary-hover: #8aa2ff;
+    --text: #e6e9f2;
+    --text-muted: #9aa2bc;
+    --border: #3a3f55;
+    --danger: #ff7378;
+    --danger-bg: #462b31;
+    --focus-ring: rgba(108, 139, 255, 0.25);
+    --shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  }
 }
 
 * {
@@ -20,11 +56,49 @@
 
 body {
   min-height: 100vh;
-  background: linear-gradient(160deg, #eef2ff 0%, var(--bg) 45%);
+  background: linear-gradient(160deg, var(--bg-accent) 0%, var(--bg) 45%);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
     "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   color: var(--text);
   line-height: 1.5;
+}
+
+/* 主题切换按钮 */
+.theme-toggle {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  color: var(--text-muted);
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.theme-toggle:hover {
+  color: var(--primary);
+  border-color: var(--primary);
+}
+
+.theme-toggle .theme-icon-sun {
+  display: none;
+}
+
+.theme-toggle.is-dark .theme-icon-sun {
+  display: block;
+}
+
+.theme-toggle.is-dark .theme-icon-moon {
+  display: none;
 }
 
 .app {
@@ -87,7 +161,7 @@ body {
 
 .todo-input:focus {
   border-color: var(--primary);
-  box-shadow: 0 0 0 3px rgba(79, 110, 247, 0.15);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 .todo-add-btn {

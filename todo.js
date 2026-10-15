@@ -164,6 +164,32 @@
     });
   });
 
+  /* ---------- 深色模式 ---------- */
+
+  var THEME_KEY = "todo-app.theme";
+  var themeToggle = document.getElementById("theme-toggle");
+
+  // 手动选择优先,否则取系统 prefers-color-scheme
+  function resolveTheme() {
+    var current = document.documentElement.dataset.theme;
+    if (current === "dark" || current === "light") return current;
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  }
+
+  themeToggle.addEventListener("click", function () {
+    var next = resolveTheme() === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    themeToggle.classList.toggle("is-dark", next === "dark");
+    try {
+      localStorage.setItem(THEME_KEY, next);
+    } catch (err) {
+      console.error("保存主题偏好失败:", err);
+    }
+  });
+
+  /* 初始图标:跟随当前生效的主题(含系统默认) */
+  themeToggle.classList.toggle("is-dark", resolveTheme() === "dark");
+
   /* 初始渲染 */
   render();
 })();
