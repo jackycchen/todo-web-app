@@ -90,7 +90,12 @@
   }
 
   function saveTodos() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(todos));
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(todos));
+    } catch (err) {
+      // 存储不可用或配额超限时,仅记录错误;不中断后续 render,保证界面可操作
+      console.error("保存待办数据失败:", err);
+    }
   }
 
   /* ---------- 渲染 ---------- */
