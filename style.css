@@ -180,12 +180,20 @@ body {
   background: var(--primary-hover);
 }
 
-/* 筛选 */
+/* 筛选栏(状态筛选 + 排序) */
+.filter-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
 .filters {
   display: inline-flex;
   gap: 4px;
   padding: 4px;
-  margin-bottom: 16px;
   background: var(--card-bg);
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -210,6 +218,83 @@ body {
 .filter-btn.is-active {
   color: #fff;
   background: var(--primary);
+}
+
+/* 排序控件 */
+.sort-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sort-label {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.sort-select,
+.todo-priority-select {
+  appearance: none;
+  font-family: inherit;
+  color: var(--text);
+  background-color: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.sort-select {
+  padding: 5px 28px 5px 14px;
+  font-size: 13px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' fill='none' stroke='%238f97ad' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 12px;
+}
+
+.sort-select:focus,
+.todo-priority-select:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+  outline: none;
+}
+
+/* 优先级选择器(输入行内) */
+.todo-priority-select {
+  flex-shrink: 0;
+  padding: 12px 30px 12px 16px;
+  font-size: 14px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' fill='none' stroke='%238f97ad' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 12px;
+  text-align: center;
+}
+
+/* 优先级徽标 */
+.priority-badge {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 1.6;
+  border-radius: 999px;
+}
+
+.priority-badge.is-high {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+}
+
+.priority-badge.is-medium {
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+}
+
+.priority-badge.is-low {
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--text-muted) 16%, transparent);
 }
 
 /* 列表 */

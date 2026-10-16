@@ -54,14 +54,30 @@
         placeholder="想做点什么?按回车添加"
         maxlength="200"
       >
+      <select id="todo-priority" class="todo-priority-select" aria-label="优先级">
+        <option value="high">高</option>
+        <option value="medium" selected>中</option>
+        <option value="low">低</option>
+      </select>
       <button type="submit" class="todo-add-btn">添加</button>
     </form>
 
-    <nav class="filters" aria-label="筛选">
-      <button type="button" class="filter-btn is-active" data-filter="all">全部</button>
-      <button type="button" class="filter-btn" data-filter="active">未完成</button>
-      <button type="button" class="filter-btn" data-filter="completed">已完成</button>
-    </nav>
+    <div class="filter-bar">
+      <nav class="filters" aria-label="按状态筛选">
+        <button type="button" class="filter-btn is-active" data-filter="all">全部</button>
+        <button type="button" class="filter-btn" data-filter="active">待完成</button>
+        <button type="button" class="filter-btn" data-filter="completed">已完成</button>
+      </nav>
+      <label class="sort-control">
+        <span class="sort-label">排序</span>
+        <select id="sort-select" class="sort-select" aria-label="排序方式">
+          <option value="created-desc" selected>创建时间 新→旧</option>
+          <option value="created-asc">创建时间 旧→新</option>
+          <option value="priority-desc">优先级 高→低</option>
+          <option value="priority-asc">优先级 低→高</option>
+        </select>
+      </label>
+    </div>
 
     <ul id="todo-list" class="todo-list"></ul>
 

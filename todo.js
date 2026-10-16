@@ -7,10 +7,43 @@
   /** 筛选状态 */
   var FILTERS = { ALL: "all", ACTIVE: "active", COMPLETED: "completed" };
 
+  /** 排序状态 */
+  var SORTS = {
+    CREATED_DESC: "created-desc",
+    CREATED_ASC: "created-asc",
+    PRIORITY_DESC: "priority-desc",
+    PRIORITY_ASC: "priority-asc"
+  };
+
+  /** 优先级 */
+  var PRIORITIES = { HIGH: "high", MEDIUM: "medium", LOW: "low" };
+
+  /** 优先级权重,数值越小越靠前(用于排序) */
+  var PRIORITY_WEIGHT = {
+    high: 0,
+    medium: 1,
+    low: 2
+  };
+
+  var PRIORITY_LABELS = {
+    high: "高",
+    medium: "中",
+    low: "低"
+  };
+
+  /** 未知优先级兜底为中 */
+  function priorityWeight(p) {
+    var w = PRIORITY_WEIGHT[p];
+    return typeof w === "number" ? w : 1;
+  }
+
   /** 当前筛选,默认显示全部 */
   var currentFilter = FILTERS.ALL;
 
-  /** 待办数组,每项形如 { id, text, completed, createdAt } */
+  /** 当前排序,默认按创建时间新→旧 */
+  var currentSort = SORTS.CREATED_DESC;
+
+  /** 待办数组,每项形如 { id, text, completed, createdAt, priority } */
   var todos = loadTodos();
 
   var form = document.getElementById("todo-form");
@@ -20,6 +53,8 @@
   var statsTotal = document.getElementById("stats-total");
   var emptyState = document.getElementById("empty-state");
   var filterButtons = document.querySelectorAll(".filter-btn");
+  var prioritySelect = document.getElementById("todo-priority");
+  var sortSelect = document.getElementById("sort-select");
 
   /* ---------- 持久化 ---------- */
 
@@ -27,11 +62,26 @@
     try {
       var items = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
       if (!Array.isArray(items)) return [];
-      return items.filter(
-        function (item) {
+      return items
+        .filter(function (item) {
           return item && typeof item.text === "string";
-        }
-      );
+        })
+        .map(function (item) {
+          // 旧数据迁移:早期版本没有 priority 字段,创建时间也可能缺失
+          var priority = item.priority;
+          if (priority !== PRIORITIES.HIGH &&
+              priority !== PRIORITIES.MEDIUM &&
+              priority !== PRIORITIES.LOW) {
+            priority = PRIORITIES.MEDIUM;
+          }
+          return {
+            id: item.id,
+            text: item.text,
+            completed: !!item.completed,
+            createdAt: typeof item.createdAt === "number" ? item.createdAt : Date.now(),
+            priority: priority
+          };
+        });
     } catch (err) {
       // 数据损坏时回退为空列表,避免整个应用不可用
       console.error("读取待办数据失败:", err);
@@ -46,14 +96,40 @@
   /* ---------- 渲染 ---------- */
 
   function getVisibleTodos() {
+    var visible;
     switch (currentFilter) {
       case FILTERS.ACTIVE:
-        return todos.filter(function (t) { return !t.completed; });
+        visible = todos.filter(function (t) { return !t.completed; });
+        break;
       case FILTERS.COMPLETED:
-        return todos.filter(function (t) { return t.completed; });
+        visible = todos.filter(function (t) { return t.completed; });
+        break;
       default:
-        return todos;
+        visible = todos.slice();
     }
+    return sortTodos(visible);
+  }
+
+  function sortTodos(items) {
+    return items.slice().sort(function (a, b) {
+      var diff;
+      switch (currentSort) {
+        case SORTS.CREATED_ASC:
+          diff = a.createdAt - b.createdAt;
+          break;
+        case SORTS.PRIORITY_DESC:
+          diff = priorityWeight(a.priority) - priorityWeight(b.priority);
+          break;
+        case SORTS.PRIORITY_ASC:
+          diff = priorityWeight(b.priority) - priorityWeight(a.priority);
+          break;
+        case SORTS.CREATED_DESC:
+        default:
+          diff = b.createdAt - a.createdAt;
+      }
+      // 排序值相同时按创建时间兜底,保证次序稳定不跳动
+      return diff !== 0 ? diff : a.createdAt - b.createdAt;
+    });
   }
 
   function render() {
@@ -75,6 +151,11 @@
       text.className = "todo-text";
       text.textContent = todo.text;
 
+      var badge = document.createElement("span");
+      badge.className = "priority-badge is-" + todo.priority;
+      badge.textContent = PRIORITY_LABELS[todo.priority] || "中";
+      badge.setAttribute("title", "优先级:" + (PRIORITY_LABELS[todo.priority] || "中"));
+
       var del = document.createElement("button");
       del.type = "button";
       del.className = "todo-delete-btn";
@@ -83,28 +164,40 @@
 
       li.appendChild(checkbox);
       li.appendChild(text);
+      li.appendChild(badge);
       li.appendChild(del);
       list.appendChild(li);
     });
 
     renderSummary();
+
+    // 空状态提示:区分「一项都没有」和「筛选结果为空」
+    if (visible.length === 0) {
+      emptyState.hidden = false;
+      emptyState.textContent =
+        todos.length === 0
+          ? "暂无待办,添加一条开始吧 ✨"
+          : "没有符合条件的待办,换个筛选或排序试试 👀";
+    } else {
+      emptyState.hidden = true;
+    }
   }
 
   function renderSummary() {
     var completedCount = todos.filter(function (t) { return t.completed; }).length;
     statsCompleted.textContent = completedCount;
     statsTotal.textContent = todos.length;
-    emptyState.hidden = todos.length !== 0;
   }
 
   /* ---------- 交互 ---------- */
 
-  function addTodo(text) {
+  function addTodo(text, priority) {
     todos.push({
       id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
       text: text,
       completed: false,
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      priority: priority
     });
     saveTodos();
     render();
@@ -132,6 +225,11 @@
     render();
   }
 
+  function setSort(sort) {
+    currentSort = sort;
+    render();
+  }
+
   /* ---------- 事件绑定 ---------- */
 
   form.addEventListener("submit", function (e) {
@@ -141,8 +239,9 @@
       input.focus();
       return;
     }
-    addTodo(text);
+    addTodo(text, prioritySelect.value);
     input.value = "";
+    prioritySelect.value = PRIORITIES.MEDIUM;
     input.focus();
   });
 
@@ -162,6 +261,10 @@
     btn.addEventListener("click", function () {
       setFilter(btn.dataset.filter);
     });
+  });
+
+  sortSelect.addEventListener("change", function () {
+    setSort(sortSelect.value);
   });
 
   /* ---------- 深色模式 ---------- */
