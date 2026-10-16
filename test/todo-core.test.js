@@ -224,3 +224,34 @@ test("sanitizeItems 非数组入参返回空数组", () => {
   assert.deepEqual(core.sanitizeItems(null), []);
   assert.deepEqual(core.sanitizeItems(undefined), []);
 });
+
+/* ---------- getEmptyStateText(空状态提示) ---------- */
+
+test("无任何待办时返回默认空状态文案", () => {
+  assert.equal(core.getEmptyStateText([], core.FILTERS.ALL), "暂无待办,添加一条开始吧 ✨");
+  assert.equal(core.getEmptyStateText([], core.FILTERS.ACTIVE), "暂无待办,添加一条开始吧 ✨");
+});
+
+test("视图非空时不返回空状态文案", () => {
+  const todos = makeTodos([{ id: "a", text: "写代码", completed: false }]);
+  assert.equal(core.getEmptyStateText(todos, core.FILTERS.ALL), null);
+  assert.equal(core.getEmptyStateText(todos, core.FILTERS.ACTIVE), null); // 未完成项可见
+});
+
+test("active 筛选下全部已完成时返回未完成语境文案", () => {
+  const todos = makeTodos([{ id: "a", text: "写代码", completed: true }]);
+  assert.equal(core.getEmptyStateText(todos, core.FILTERS.ACTIVE), "没有未完成的待办 🎉");
+});
+
+test("completed 筛选下全部未完成时返回已完成语境文案", () => {
+  const todos = makeTodos([{ id: "a", text: "写代码", completed: false }]);
+  assert.equal(core.getEmptyStateText(todos, core.FILTERS.COMPLETED), "还没有已完成的待办 💪");
+});
+
+test("非法筛选且视图为空时返回兜底文案", () => {
+  assert.equal(core.getEmptyStateText([], "bogus"), "暂无待办,添加一条开始吧 ✨");
+});
+
+test("非数组入参返回默认空状态文案", () => {
+  assert.equal(core.getEmptyStateText(null, core.FILTERS.ALL), "暂无待办,添加一条开始吧 ✨");
+});

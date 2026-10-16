@@ -11,6 +11,9 @@
   /** 当前筛选,默认显示全部 */
   var currentFilter = FILTERS.ALL;
 
+  /** 完成/淡出过渡时长(ms),需与 style.css 中的过渡时长保持一致 */
+  var TRANSITION_MS = 350;
+
   /** 待办数组,每项形如 { id, text, completed, createdAt } */
   var todos = loadTodos();
 
@@ -77,13 +80,22 @@
     });
 
     renderSummary();
+    updateEmptyState(visible.length);
   }
 
   function renderSummary() {
     var completedCount = todos.filter(function (t) { return t.completed; }).length;
     statsCompleted.textContent = completedCount;
     statsTotal.textContent = todos.length;
-    emptyState.hidden = todos.length !== 0;
+  }
+
+  function updateEmptyState(visibleCount) {
+    if (visibleCount === 0) {
+      emptyState.textContent = core.getEmptyStateText(todos, currentFilter);
+      emptyState.hidden = false;
+    } else {
+      emptyState.hidden = true;
+    }
   }
 
   /* ---------- 交互 ---------- */
@@ -104,7 +116,36 @@
     todos = core.toggleTodo(todos, id);
     if (todos === before) return; // id 不存在,无变化
     saveTodos();
-    render();
+    renderSummary();
+
+    // 原地切换该条的完成状态,让 CSS 的划线 + 淡出过渡动画生效(而非整表重绘)
+    var li = list.querySelector('[data-id="' + id + '"]');
+    if (!li) return;
+
+    var toggled = null;
+    for (var i = 0; i < todos.length; i++) {
+      if (todos[i].id === id) { toggled = todos[i]; break; }
+    }
+    if (!toggled) return;
+
+    li.classList.toggle("is-completed", toggled.completed);
+    var checkbox = li.querySelector(".todo-checkbox");
+    if (checkbox) {
+      checkbox.checked = toggled.completed;
+      checkbox.setAttribute("aria-label", toggled.completed ? "标记为未完成" : "标记为已完成");
+    }
+
+    // 切换后不再匹配当前筛选(如"未完成"下勾选)时,过渡结束后移出视图
+    var staysInView = core.getVisibleTodos(todos, currentFilter).some(function (t) {
+      return t.id === toggled.id;
+    });
+    if (!staysInView) {
+      li.classList.add("is-leaving");
+      window.setTimeout(function () {
+        li.remove();
+        updateEmptyState(getVisibleTodos().length);
+      }, TRANSITION_MS);
+    }
   }
 
   function removeTodo(id) {
