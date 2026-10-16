@@ -1,11 +1,12 @@
 (function () {
   "use strict";
 
+  // 核心逻辑(纯函数)独立在 todo-core.js,便于单元测试
+  var core = typeof TodoCore !== "undefined" ? TodoCore : require("./todo-core.js");
+  var FILTERS = core.FILTERS;
+
   /** localStorage 存储键 */
   var STORAGE_KEY = "todo-app.items";
-
-  /** 筛选状态 */
-  var FILTERS = { ALL: "all", ACTIVE: "active", COMPLETED: "completed" };
 
   /** 当前筛选,默认显示全部 */
   var currentFilter = FILTERS.ALL;
@@ -26,12 +27,7 @@
   function loadTodos() {
     try {
       var items = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
-      if (!Array.isArray(items)) return [];
-      return items.filter(
-        function (item) {
-          return item && typeof item.text === "string";
-        }
-      );
+      return core.sanitizeItems(items);
     } catch (err) {
       // 数据损坏时回退为空列表,避免整个应用不可用
       console.error("读取待办数据失败:", err);
@@ -46,14 +42,7 @@
   /* ---------- 渲染 ---------- */
 
   function getVisibleTodos() {
-    switch (currentFilter) {
-      case FILTERS.ACTIVE:
-        return todos.filter(function (t) { return !t.completed; });
-      case FILTERS.COMPLETED:
-        return todos.filter(function (t) { return t.completed; });
-      default:
-        return todos;
-    }
+    return core.getVisibleTodos(todos, currentFilter);
   }
 
   function render() {
@@ -100,26 +89,28 @@
   /* ---------- 交互 ---------- */
 
   function addTodo(text) {
-    todos.push({
-      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
-      text: text,
-      completed: false,
-      createdAt: Date.now()
-    });
+    todos = core.addTodo(todos, text);
+    // 空文本/纯空白时不新增,与表单校验保持一致的幂等语义
+    if (todos.length === 0) {
+      input.focus();
+      return;
+    }
     saveTodos();
     render();
   }
 
   function toggleTodo(id) {
-    var todo = todos.find(function (t) { return t.id === id; });
-    if (!todo) return;
-    todo.completed = !todo.completed;
+    var before = todos;
+    todos = core.toggleTodo(todos, id);
+    if (todos === before) return; // id 不存在,无变化
     saveTodos();
     render();
   }
 
   function removeTodo(id) {
-    todos = todos.filter(function (t) { return t.id !== id; });
+    var before = todos;
+    todos = core.removeTodo(todos, id);
+    if (todos === before) return; // id 不存在,无变化
     saveTodos();
     render();
   }

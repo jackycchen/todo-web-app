@@ -1,0 +1,13 @@
+{
+  "name": "todo-web-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "网页版待办清单应用",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}
