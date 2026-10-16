@@ -38,3 +38,5 @@ node --test test/todo-core.test.js
 | `todo-core.js` | 纯逻辑核心(create/add/toggle/remove/filter/sanitize),UMD 兼容浏览器与 Node |
 | `todo.js` | DOM 渲染、事件绑定、localStorage 持久化,调用 `TodoCore` 完成核心操作 |
 | `test/todo-core.test.js` | 核心逻辑单元测试 |
+
+push 验证 2026-10-16
