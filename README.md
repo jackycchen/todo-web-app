@@ -40,3 +40,4 @@ node --test test/todo-core.test.js
 | `test/todo-core.test.js` | 核心逻辑单元测试 |
 
 push 验证 2026-10-16
+PR 创建验证 2026-10-16
