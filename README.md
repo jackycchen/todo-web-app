@@ -27,6 +27,7 @@ npm start
 - 用户名 + 密码注册/登录,**密码经 scrypt 加盐哈希存储,不保存明文**
 - 登录后返回会话 token,后续请求通过 `Authorization: Bearer <token>` 鉴权
 - 待办数据按用户在服务端隔离,任何浏览器登录同一账号都能看到同样数据
+- 会话失效(任一 API 返回 401)时自动清除本地 token 并回到登录页,重新登录即可继续
 - 原有 pure-core 逻辑(`todo-core.js`)保持纯函数不变,仍可独立单元测试
 
 ## REST API
@@ -71,6 +72,7 @@ npm test
 | `lib/db.js` | SQLite 持久化层(users / sessions / todos 三张表) |
 | `test/todo-core.test.js` | 核心逻辑单元测试 |
 | `test/api.test.js` | 后端 API 集成测试 |
+| `test/api-client.test.js` | 前端 API 客户端单元测试(假 fetch) |
 | `test/frontend.test.js` | 前端端到端测试(DOM 轻量桩) |
 
 push 验证 2026-10-16

@@ -340,6 +340,16 @@
     });
   });
 
+  /* ---------- 会话失效:统一 401 处理,清 token 回登录页 ---------- */
+  if (api) {
+    api.onUnauthorized = function () {
+      todos = [];
+      lastSynced = [];
+      render();
+      showAuth();
+    };
+  }
+
   /* ---------- 深色模式 ---------- */
 
   var THEME_KEY = "todo-app.theme";

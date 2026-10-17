@@ -54,6 +54,13 @@
             data = null;
           }
         }
+        if (res.status === 401) {
+          // 会话失效:统一清除本地 token,并通知页面回到登录页
+          setToken(null);
+          if (typeof api.onUnauthorized === "function") {
+            api.onUnauthorized();
+          }
+        }
         if (!res.ok) {
           var err = new Error((data && data.error) || ("请求失败: HTTP " + res.status));
           err.status = res.status;
@@ -84,6 +91,8 @@
   }
 
   var api = {
+    // 页面层在加载时注册:任一请求返回 401 时被调用
+    onUnauthorized: null,
     getToken: getToken,
     setToken: setToken,
     clearToken: function () {

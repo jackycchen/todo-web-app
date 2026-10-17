@@ -342,3 +342,26 @@ test("前端端到端:注册/增删改/登出/重新登录/用户隔离", async 
   assert.equal(items.length, 1);
   assert.equal(items[0].text, "dave 的任务");
 });
+
+test("会话过期:API 返回 401 时清除 token 并回登录页", async () => {
+  // 前序场景结束时为 dave 登录态
+  assert.equal(getElement("app-view").hidden, false);
+  assert.equal(getElement("current-user").textContent, "dave");
+
+  // 服务端使当前会话失效(模拟登录过期/服务端重启)
+  const token = window.localStorage.getItem("todo-app.token");
+  await fetch(`${base}/api/logout`, {
+    method: "POST",
+    headers: { Authorization: "Bearer " + token },
+  });
+
+  // 客户端仍持有旧 token:触发任意 API 调用(新增待办 -> createTodo)
+  fillInput("todo-input", "会话过期后新增");
+  submitForm("todo-form");
+  await flush();
+
+  // 401 统一处理:清除本地 token 并回到登录页
+  assert.equal(window.localStorage.getItem("todo-app.token"), null);
+  assert.equal(getElement("app-view").hidden, true);
+  assert.equal(getElement("auth-view").hidden, false);
+});
