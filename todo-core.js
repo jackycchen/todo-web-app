@@ -89,6 +89,20 @@
     });
   }
 
+  /**
+   * 计算空状态提示文案。
+   * 视图(即筛后的可见列表)非空时返回 null(不显示空状态);
+   * 否则据数据与筛选返回对应提示,区分"完全无待办"与"筛选无匹配"。
+   */
+  function getEmptyStateText(todos, filter) {
+    if (!Array.isArray(todos)) return "暂无待办,添加一条开始吧 ✨";
+    if (getVisibleTodos(todos, filter).length > 0) return null;
+    if (todos.length === 0) return "暂无待办,添加一条开始吧 ✨";
+    if (filter === FILTERS.ACTIVE) return "没有未完成的待办 🎉";
+    if (filter === FILTERS.COMPLETED) return "还没有已完成的待办 💪";
+    return "暂无符合条件的待办";
+  }
+
   return {
     FILTERS: FILTERS,
     generateId: generateId,
@@ -97,6 +111,7 @@
     toggleTodo: toggleTodo,
     removeTodo: removeTodo,
     getVisibleTodos: getVisibleTodos,
-    sanitizeItems: sanitizeItems
+    sanitizeItems: sanitizeItems,
+    getEmptyStateText: getEmptyStateText
   };
 });

@@ -227,7 +227,8 @@ body {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  transition: opacity 0.2s, transform 0.2s;
+  /* 完成划线 + 淡出过渡,时长需与 todo.js 的 TRANSITION_MS 保持一致 */
+  transition: opacity 0.35s ease, transform 0.35s ease;
   animation: fade-in 0.2s ease;
 }
 
@@ -251,18 +252,52 @@ body {
 }
 
 .todo-text {
-  flex: 1;
+  position: relative;
+  flex-shrink: 1;
+  min-width: 0;
   font-size: 15px;
   word-break: break-all;
+  transition: color 0.35s ease;
+}
+
+/* 已完成:整条淡化,文字划线从左到右绘制 */
+.todo-item.is-completed {
+  opacity: 0.55;
 }
 
 .todo-item.is-completed .todo-text {
   color: var(--text-muted);
-  text-decoration: line-through;
+}
+
+.todo-item.is-completed .todo-text::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 48%;
+  width: 100%;
+  height: 2px;
+  background-color: var(--text-muted);
+  border-radius: 1px;
+  transform-origin: left center;
+  transform: scaleX(0);
+  animation: strike-draw 0.35s ease forwards;
+}
+
+@keyframes strike-draw {
+  to {
+    transform: scaleX(1);
+  }
+}
+
+/* 不再匹配当前筛选时,淡出后移出视图 */
+.todo-item.is-leaving {
+  opacity: 0;
+  transform: translateX(10px) scale(0.98);
 }
 
 .todo-delete-btn {
   flex-shrink: 0;
+  margin-left: auto;
   padding: 4px 10px;
   font-size: 13px;
   color: var(--danger);
