@@ -1,0 +1,5 @@
+# 服务端运行时数据(SQLite 数据库文件,由 server.js 自动创建)
+data/
+
+# 日志
+*.log

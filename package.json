@@ -1,13 +1,19 @@
 {
   "name": "todo-web-app",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
-  "description": "网页版待办清单应用",
+  "description": "网页版待办清单应用(多用户版,含后端 API)",
   "scripts": {
-    "test": "node --test test/*.test.js"
+    "start": "node server.js",
+    "test": "node --test test/*.test.js",
+    "test:core": "node --test test/todo-core.test.js",
+    "test:api": "node --test test/api.test.js"
+  },
+  "dependencies": {
+    "express": "^5.3.0"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22.5.0"
   },
   "license": "MIT"
 }

@@ -36,9 +36,42 @@
       <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
     </svg>
   </button>
-  <main class="app">
+  <section id="auth-view" class="auth-view" hidden>
+    <div class="auth-card">
+      <h2 class="auth-title">待办清单</h2>
+      <p class="auth-tip">登录后即可在任意浏览器同步你的待办</p>
+      <div class="auth-tabs" role="tablist" aria-label="登录 / 注册">
+        <button type="button" class="auth-tab is-active" data-auth-tab="login" role="tab" aria-selected="true">登录</button>
+        <button type="button" class="auth-tab" data-auth-tab="register" role="tab" aria-selected="false">注册</button>
+      </div>
+
+      <form id="login-form" class="auth-form" autocomplete="on">
+        <label class="auth-label" for="login-username">用户名</label>
+        <input id="login-username" type="text" class="auth-input" placeholder="请输入用户名" autocomplete="username">
+        <label class="auth-label" for="login-password">密码</label>
+        <input id="login-password" type="password" class="auth-input" placeholder="请输入密码" autocomplete="current-password">
+        <button type="submit" class="auth-submit">登录</button>
+      </form>
+
+      <form id="register-form" class="auth-form" autocomplete="on" hidden>
+        <label class="auth-label" for="register-username">用户名</label>
+        <input id="register-username" type="text" class="auth-input" placeholder="设置用户名" autocomplete="username">
+        <label class="auth-label" for="register-password">密码</label>
+        <input id="register-password" type="password" class="auth-input" placeholder="至少 6 位" autocomplete="new-password">
+        <button type="submit" class="auth-submit">注册并登录</button>
+      </form>
+
+      <p id="auth-error" class="auth-error" hidden></p>
+    </div>
+  </section>
+
+  <main id="app-view" class="app" hidden>
     <header class="app-header">
       <h1>待办清单</h1>
+      <div class="user-bar">
+        <span id="current-user" class="current-user"></span>
+        <button type="button" id="logout-btn" class="logout-btn">退出登录</button>
+      </div>
       <div class="stats-bar" role="status" aria-live="polite">
         <span class="stats-text">
           已完成 <strong id="stats-completed">0</strong> 项 / 共 <strong id="stats-total">0</strong> 项
@@ -69,6 +102,7 @@
   </main>
 
   <script src="todo-core.js"></script>
+  <script src="api.js"></script>
   <script src="todo.js"></script>
 </body>
 </html>
