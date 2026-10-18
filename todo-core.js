@@ -53,7 +53,13 @@
     var next = todos.map(function (t) {
       if (t.id === id) {
         found = true;
-        return { id: t.id, text: t.text, completed: !t.completed, createdAt: t.createdAt };
+        return {
+          id: t.id,
+          text: t.text,
+          completed: !t.completed,
+          createdAt: t.createdAt,
+          updatedAt: t.updatedAt
+        };
       }
       return t;
     });

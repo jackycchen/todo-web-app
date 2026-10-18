@@ -184,6 +184,7 @@ before(async () => {
   global.document = documentStub;
   global.localStorage = localStorageShim;
   global.window.TODO_API_BASE = base;
+  global.window.TODO_POLL_INTERVAL_MS = 150; // 测试中缩短轮询间隔
   global.window.localStorage = localStorageShim;
   global.window.matchMedia = () => ({ matches: false });
 
@@ -364,4 +365,50 @@ test("会话过期:API 返回 401 时清除 token 并回登录页", async () => 
   assert.equal(window.localStorage.getItem("todo-app.token"), null);
   assert.equal(getElement("app-view").hidden, true);
   assert.equal(getElement("auth-view").hidden, false);
+});
+
+test("多端同步:另一会话修改后,本端轮询自动同步并提示", async () => {
+  // 上一个用例已回到登录页;注册新用户 erin
+  clickTab(1);
+  fillInput("register-username", "erin");
+  fillInput("register-password", "secret123");
+  submitForm("register-form");
+  await flush();
+  assert.equal(getElement("app-view").hidden, false);
+
+  fillInput("todo-input", "多端同步任务");
+  submitForm("todo-form");
+  await flush();
+
+  let items = renderedItems();
+  assert.equal(items.length, 1);
+  assert.equal(items[0].completed, false);
+
+  // 模拟第二个浏览器:同一账号另开会话,勾选完成
+  const loginRes = await fetch(`${base}/api/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "erin", password: "secret123" }),
+  });
+  const { token } = await loginRes.json();
+  const serverList = await (
+    await fetch(`${base}/api/todos`, { headers: { Authorization: "Bearer " + token } })
+  ).json();
+  const target = serverList.find((t) => t.text === "多端同步任务");
+  const patchRes = await fetch(`${base}/api/todos/${encodeURIComponent(target.id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+    body: JSON.stringify({ completed: true }),
+  });
+  assert.equal(patchRes.status, 200);
+
+  // 轮询间隔 150ms:等待若干轮
+  await new Promise((r) => setTimeout(r, 500));
+
+  items = renderedItems();
+  assert.equal(items.length, 1);
+  assert.equal(items[0].completed, true, "另一端的勾选应自动同步到本端");
+  assert.equal(getElement("stats-completed").textContent, "1");
+  assert.equal(getElement("sync-notice").hidden, false);
+  assert.equal(getElement("sync-notice").textContent, "已在其他设备更新");
 });

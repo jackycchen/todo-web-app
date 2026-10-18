@@ -278,3 +278,137 @@ test("同一用户在不同浏览器/会话中看到相同数据", async () => {
   const listB = (await (await get("/api/todos", sessionB.data.token)).json());
   assert.ok(listB.some((t) => t.text === "跨会话任务"));
 });
+
+/* ---------- 多端增量同步(updatedAt / since / tombstone / LWW) ---------- */
+
+async function ensureUser(username, password) {
+  const reg = await register(username, password);
+  if (reg.status === 201) return reg.data.token;
+  const res = await login(username, password);
+  return res.data.token;
+}
+
+test("新增与修改都会刷新 updatedAt(毫秒时间戳)", async () => {
+  const token = await ensureUser("sync_updated", "secret123");
+  const created = await createTodo(token, "updatedAt 任务");
+  assert.ok(Number.isSafeInteger(created.data.updatedAt), "updatedAt 应为毫秒整数");
+  assert.ok(created.data.updatedAt >= created.data.createdAt);
+
+  const toggledRes = await patch(`/api/todos/${created.data.id}`, { completed: true }, token);
+  const toggled = await toggledRes.json();
+  assert.ok(
+    toggled.updatedAt > created.data.updatedAt,
+    "勾选完成必须产生更新的 updatedAt"
+  );
+
+  const renamedRes = await patch(`/api/todos/${created.data.id}`, { text: "改名后" }, token);
+  const renamed = await renamedRes.json();
+  assert.ok(renamed.updatedAt > toggled.updatedAt, "修改内容必须产生更新的 updatedAt");
+
+  const list = await (await get("/api/todos", token)).json();
+  const found = list.find((t) => t.id === created.data.id);
+  assert.equal(found.text, "改名后");
+  assert.equal(found.completed, true);
+  assert.equal(found.updatedAt, renamed.updatedAt);
+});
+
+test("GET /api/todos?since= 只返回该时间之后发生变更的待办", async () => {
+  const token = await ensureUser("sync_since", "secret123");
+  const first = await createTodo(token, "since 第一条");
+  const second = await createTodo(token, "since 第二条");
+
+  const changesRes = await get(`/api/todos?since=${first.data.updatedAt}`, token);
+  assert.equal(changesRes.status, 200);
+  const changes = await changesRes.json();
+  const ids = changes.map((t) => t.id);
+  assert.ok(ids.includes(second.data.id), "游标之后新建的待办应返回");
+  assert.ok(!ids.includes(first.data.id), "游标之前的待办不应返回");
+  changes.forEach((t) => assert.ok(t.updatedAt > first.data.updatedAt));
+
+  // 修改第二条后,从第二条旧版本的时间戳增量拉取,应拿到新版本
+  const patchedRes = await patch(`/api/todos/${second.data.id}`, { completed: true }, token);
+  const patched = await patchedRes.json();
+  const afterPatch = await (await get(`/api/todos?since=${second.data.updatedAt}`, token)).json();
+  assert.equal(afterPatch.length, 1);
+  assert.equal(afterPatch[0].id, second.data.id);
+  assert.equal(afterPatch[0].completed, true);
+  assert.equal(afterPatch[0].updatedAt, patched.updatedAt);
+});
+
+test("since 参数非法时返回 400", async () => {
+  const token = await ensureUser("sync_since", "secret123");
+  for (const bad of ["-1", "1.5", "abc", "", "1e3"]) {
+    const res = await get(`/api/todos?since=${encodeURIComponent(bad)}`, token);
+    assert.equal(res.status, 400, `since=${JSON.stringify(bad)} 应被拒绝`);
+  }
+});
+
+test("删除写入 tombstone:增量接口可感知,全量列表不返回", async () => {
+  const token = await ensureUser("sync_delete", "secret123");
+  const item = (await createTodo(token, "待删除同步")).data;
+  const cursor = item.updatedAt;
+
+  const delRes = await del(`/api/todos/${item.id}`, token);
+  assert.equal(delRes.status, 204);
+
+  const changes = await (await get(`/api/todos?since=${cursor}`, token)).json();
+  const tombstone = changes.find((t) => t.id === item.id);
+  assert.ok(tombstone, "删除后的待办应出现在增量结果中");
+  assert.equal(tombstone.deleted, true);
+  assert.ok(tombstone.updatedAt > cursor, "删除也要刷新 updatedAt");
+
+  const full = await (await get("/api/todos", token)).json();
+  assert.ok(!full.some((t) => t.id === item.id), "全量列表不应包含已删除项");
+
+  // 已删除项再次删除返回 404,避免重复墓碑
+  const again = await del(`/api/todos/${item.id}`, token);
+  assert.equal(again.status, 404);
+});
+
+test("last-write-wins:后写的修改胜出,两端增量同步一致", async () => {
+  const tokenA = await ensureUser("sync_lww", "secret123");
+  const sessionB = await login("sync_lww", "secret123");
+  const tokenB = sessionB.data.token;
+  assert.notEqual(tokenA, tokenB, "模拟两个浏览器会话");
+
+  const created = (await createTodo(tokenA, "冲突前")).data;
+  const cursorB = created.updatedAt;
+
+  // 设备 A 先写
+  const writeA = await (await patch(`/api/todos/${created.id}`, { text: "A 版本" }, tokenA)).json();
+  // 设备 B 后写,应胜出
+  const writeB = await (await patch(`/api/todos/${created.id}`, { text: "B 版本" }, tokenB)).json();
+  assert.ok(writeB.updatedAt > writeA.updatedAt);
+
+  // 设备 A 从自己的写入时间点增量拉取,得到 B 的版本
+  const changesA = await (await get(`/api/todos?since=${writeA.updatedAt}`, tokenA)).json();
+  const winner = changesA.find((t) => t.id === created.id);
+  assert.ok(winner, "设备 A 应能增量看到设备 B 的修改");
+  assert.equal(winner.text, "B 版本");
+  assert.equal(winner.updatedAt, writeB.updatedAt);
+
+  // 设备 B 从创建时间点拉取,也能看到完整变化序列的最终状态
+  const changesB = await (await get(`/api/todos?since=${cursorB}`, tokenB)).json();
+  const latestB = changesB.filter((t) => t.id === created.id).pop();
+  assert.equal(latestB.text, "B 版本");
+  assert.equal(latestB.updatedAt, writeB.updatedAt);
+
+  // 服务端最终状态与最后写入一致
+  const full = await (await get("/api/todos", tokenA)).json();
+  assert.equal(full.find((t) => t.id === created.id).text, "B 版本");
+});
+
+test("增量接口需要鉴权,且只返回当前用户的数据", async () => {
+  const noAuth = await get("/api/todos?since=0");
+  assert.equal(noAuth.status, 401);
+
+  const aliceToken = await ensureUser("sync_iso_alice", "secret123");
+  const bobToken = await ensureUser("sync_iso_bob", "secret123");
+  const item = (await createTodo(aliceToken, "alice 的增量数据")).data;
+
+  const bobChanges = await (await get("/api/todos?since=0", bobToken)).json();
+  assert.ok(!bobChanges.some((t) => t.id === item.id), "不应看到其他用户的数据");
+
+  const aliceChanges = await (await get("/api/todos?since=0", aliceToken)).json();
+  assert.ok(aliceChanges.some((t) => t.id === item.id));
+});

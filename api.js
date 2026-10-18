@@ -114,8 +114,15 @@
     getMe: function () {
       return request("/api/me");
     },
-    getTodos: function () {
-      return request("/api/todos");
+    /**
+     * 拉取待办。不传 since 时为全量;传入毫秒时间戳时只拉取该时间之后的变更
+     * (变更数组可能包含 deleted:true 的删除墓碑)。
+     */
+    getTodos: function (since) {
+      if (since === undefined || since === null) {
+        return request("/api/todos");
+      }
+      return request("/api/todos?since=" + encodeURIComponent(String(since)));
     },
     createTodo: function (item) {
       return post("/api/todos", item);
