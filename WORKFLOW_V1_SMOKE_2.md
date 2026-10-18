@@ -16,7 +16,7 @@
 | 阶段 | 职责 | 交付物 | 状态 |
 | --- | --- | --- | --- |
 | implementer | 按任务实现变更并完成后端自测 | 本文件 + 自测结果 | 已完成 |
-| qa | 独立复核变更范围、测试结果与验收标准 | QA 结论(见下方检查项) | 待执行 |
+| qa | 独立复核变更范围、测试结果与验收标准 | QA 结论(见下方检查项) | 已完成 |
 | reviewer | 代码/文档评审并给出合并意见 | 评审结论 | 待执行 |
 
 ## Implementer 阶段记录
@@ -39,10 +39,20 @@
 
 ## QA 阶段检查项
 
-- [ ] 分支相对 `main` 的 diff 仅新增 `WORKFLOW_V1_SMOKE_2.md`,无其他文件改动
-- [ ] `npm test` 全部通过(57/57),无失败或跳过
-- [ ] 文件内容完整覆盖 implementer → qa → reviewer 三段链路
-- [ ] 记录中的工作流 ID、分支名与实际一致
+- [x] 分支相对 `main` 的 diff 仅新增 `WORKFLOW_V1_SMOKE_2.md`,无其他文件改动
+- [x] `npm test` 全部通过(57/57),无失败或跳过
+- [x] 文件内容完整覆盖 implementer → qa → reviewer 三段链路
+- [x] 记录中的工作流 ID、分支名与实际一致
+
+**QA 复核记录**:
+
+- 复核命令:`git diff --name-status main...HEAD`
+- 复核结果:`A WORKFLOW_V1_SMOKE_2.md`(唯一变更)
+- 测试命令:`npm test`(`node --test test/*.test.js`)
+- 测试结果:`tests 57 / pass 57 / fail 0 / cancelled 0 / skipped 0`,耗时约 1.43s
+- 测试覆盖:4 个测试文件(`todo-core.test.js`、`api.test.js`、`api-client.test.js`、`frontend.test.js`),覆盖核心逻辑、后端 API、客户端封装与前端交互
+- 工作流标识核对:与实际工作流 ID、分支名一致
+- QA 结论:**通过**,未发现缺陷;变更范围与任务要求一致
 
 ## Reviewer 阶段检查项
 
@@ -53,4 +63,8 @@
 
 ## 验证结论
 
-Implementer 阶段完成:文件已新增、自测通过、变更范围可控。整体链路结论待 qa 与 reviewer 阶段回填。
+Implementer 阶段完成:文件已新增、自测通过、变更范围可控。
+
+QA 阶段完成:独立复核确认变更范围仅为本文件,`npm test` 57/57 通过,未发现缺陷。
+
+整体链路结论待 reviewer 阶段回填。
