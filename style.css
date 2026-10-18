@@ -140,6 +140,23 @@ body {
   color: var(--primary);
 }
 
+/* 多端同步提示 */
+.sync-notice {
+  display: inline-block;
+  margin-top: 12px;
+  padding: 6px 14px;
+  font-size: 13px;
+  color: var(--primary);
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: var(--shadow);
+}
+
+.sync-notice[hidden] {
+  display: none;
+}
+
 /* 输入区 */
 .todo-form {
   display: flex;

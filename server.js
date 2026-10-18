@@ -128,8 +128,25 @@ function createApp(options = {}) {
 
   // ---------- 待办 CRUD(按当前用户隔离) ----------
 
+  /**
+   * 列出待办。
+   *  - 不带 since: 返回全部未删除待办(初始加载)
+   *  - 带 since  : 返回 updatedAt 严格大于 since 的变更(含删除墓碑 deleted:true)
+   * since 必须是毫秒时间戳(非负安全整数)。
+   */
   app.get("/api/todos", auth, (req, res) => {
-    res.json(store.getTodos(req.userId));
+    const rawSince = req.query.since;
+    if (rawSince === undefined) {
+      return res.json(store.getTodos(req.userId));
+    }
+    if (typeof rawSince !== "string" || !/^\d+$/.test(rawSince)) {
+      return res.status(400).json({ error: "since 必须是毫秒时间戳(非负整数)" });
+    }
+    const since = Number(rawSince);
+    if (!Number.isSafeInteger(since)) {
+      return res.status(400).json({ error: "since 必须是毫秒时间戳(非负整数)" });
+    }
+    res.json(store.getChangedTodos(req.userId, since));
   });
 
   app.post("/api/todos", auth, (req, res) => {
@@ -144,8 +161,7 @@ function createApp(options = {}) {
       completed: !!body.completed,
       createdAt: Number.isFinite(body.createdAt) ? body.createdAt : Date.now()
     };
-    store.insertTodo(req.userId, item);
-    res.status(201).json(item);
+    res.status(201).json(store.insertTodo(req.userId, item));
   });
 
   app.patch("/api/todos/:id", auth, (req, res) => {

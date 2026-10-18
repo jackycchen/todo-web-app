@@ -28,6 +28,10 @@ npm start
 - 登录后返回会话 token,后续请求通过 `Authorization: Bearer <token>` 鉴权
 - 待办数据按用户在服务端隔离,任何浏览器登录同一账号都能看到同样数据
 - 会话失效(任一 API 返回 401)时自动清除本地 token 并回到登录页,重新登录即可继续
+- **多端实时同步**:客户端每 5 秒轮询一次 `GET /api/todos?since=<上次同步时间>`,
+  页面隐藏时暂停,恢复可见时立即拉取一次
+- **冲突处理(last-write-wins)**:按服务端毫秒级 `updatedAt` 比较,较新的写入胜出;
+  本地列表被其他设备改动时在页面上提示「已在其他设备更新」
 - 原有 pure-core 逻辑(`todo-core.js`)保持纯函数不变,仍可独立单元测试
 
 ## REST API
@@ -39,12 +43,25 @@ npm start
 | POST | `/api/login` | 登录,body 同上,返回 `{ token, username }` |
 | POST | `/api/logout` | 登出(需鉴权) |
 | GET | `/api/me` | 获取当前登录用户(需鉴权) |
-| GET | `/api/todos` | 列出当前用户待办(需鉴权) |
+| GET | `/api/todos` | 列出当前用户全部未删除待办(需鉴权) |
+| GET | `/api/todos?since=<ms>` | 增量拉取 `updatedAt > since` 的变更,含删除墓碑(需鉴权) |
 | POST | `/api/todos` | 新建待办,body `{ text, id?, completed?, createdAt? }`(需鉴权) |
 | PATCH | `/api/todos/:id` | 更新待办,body `{ text?, completed? }`(需鉴权) |
-| DELETE | `/api/todos/:id` | 删除待办(需鉴权) |
+| DELETE | `/api/todos/:id` | 删除待办(软删除,需鉴权) |
 
-待办项数据结构与 `todo-core.js` 一致:`{ id, text, completed, createdAt }`。
+待办项数据结构:`{ id, text, completed, createdAt, updatedAt, deleted }`。
+`createdAt` / `updatedAt` 均为服务端毫秒时间戳;`since` 必须是非负整数,
+非法参数返回 400。
+
+### 增量同步与删除
+
+- 所有写操作(新增、修改、勾选完成、删除)都会刷新 `updatedAt`
+  (进程内单调递增,避免同毫秒写入被 `since` 漏掉)。
+- 删除采用 **soft delete tombstone**:数据库保留记录并置 `deleted = 1`,
+  删除同样刷新 `updatedAt`。全量接口过滤墓碑,增量接口返回
+  `deleted: true` 的条目,其他端据此移除本地项。
+- 旧数据库自动迁移:`ALTER TABLE` 新增 `updated_at` / `deleted` 列,
+  旧记录 `updated_at` 回填为 `created_at`。
 
 ## 单元与集成测试
 
@@ -71,9 +88,10 @@ npm test
 | `server.js` | Express 后端:静态托管 + 认证 + 待办 CRUD,按用户隔离 |
 | `lib/db.js` | SQLite 持久化层(users / sessions / todos 三张表) |
 | `test/todo-core.test.js` | 核心逻辑单元测试 |
-| `test/api.test.js` | 后端 API 集成测试 |
+| `test/api.test.js` | 后端 API 集成测试(含 updatedAt / since / 删除同步 / LWW) |
 | `test/api-client.test.js` | 前端 API 客户端单元测试(假 fetch) |
-| `test/frontend.test.js` | 前端端到端测试(DOM 轻量桩) |
+| `test/frontend.test.js` | 前端端到端测试(DOM 轻量桩,含双端轮询同步) |
+| `test/migration.test.js` | 旧库迁移测试(ALTER TABLE + updatedAt 回填) |
 
 push 验证 2026-10-16
 PR 创建验证 2026-10-16
