@@ -12,11 +12,33 @@
   /** 完成/淡出过渡时长(ms),需与 style.css 中的过渡时长保持一致 */
   var TRANSITION_MS = 350;
 
-  /** 待办数组,每项形如 { id, text, completed, createdAt } */
+  /**
+   * 增量同步轮询间隔(ms)。默认 5s,可通过 window.TODO_POLL_INTERVAL_MS 覆盖
+   * (测试用),上限 10s(验收要求 10 秒内同步)。
+   */
+  var configuredPoll = typeof window !== "undefined" ? Number(window.TODO_POLL_INTERVAL_MS) : NaN;
+  var POLL_INTERVAL_MS =
+    Number.isFinite(configuredPoll) && configuredPoll > 0
+      ? Math.min(configuredPoll, 10000)
+      : 5000;
+
+  /** 同步提示("已在其他设备更新")的展示时长 */
+  var NOTICE_MS = 4000;
+
+  /** 待办数组,每项形如 { id, text, completed, createdAt, updatedAt } */
   var todos = [];
 
   /** 上次成功同步到服务端的快照,用于计算增量 */
   var lastSynced = [];
+
+  /** 增量拉取游标:已见过的最大 updatedAt(服务端毫秒时间戳) */
+  var lastSyncAt = 0;
+
+  var pollTimer = null;
+  var pollInFlight = false;
+  var saveInFlight = 0;
+  var saveQueue = Promise.resolve();
+  var noticeTimer = null;
 
   /* ---------- DOM 引用 ---------- */
 
@@ -35,6 +57,7 @@
   var statsCompleted = document.getElementById("stats-completed");
   var statsTotal = document.getElementById("stats-total");
   var emptyState = document.getElementById("empty-state");
+  var syncNotice = document.getElementById("sync-notice");
   var filterButtons = document.querySelectorAll(".filter-btn");
 
   /* ---------- 认证 ---------- */
@@ -50,6 +73,7 @@
   }
 
   function showAuth() {
+    stopPolling();
     authView.hidden = false;
     appView.hidden = true;
   }
@@ -58,7 +82,10 @@
     authView.hidden = true;
     appView.hidden = false;
     if (currentUser) currentUser.textContent = username || "";
-    return loadTodos();
+    return loadTodos().then(function (items) {
+      startPolling();
+      return items;
+    });
   }
 
   function switchAuthTab(tab) {
@@ -75,13 +102,60 @@
   /* ---------- 持久化(通过服务端 API) ---------- */
 
   function cloneItem(t) {
-    return { id: t.id, text: t.text, completed: t.completed, createdAt: t.createdAt };
+    return {
+      id: t.id,
+      text: t.text,
+      completed: t.completed,
+      createdAt: t.createdAt,
+      updatedAt: t.updatedAt
+    };
+  }
+
+  function findTodoIndex(id) {
+    for (var i = 0; i < todos.length; i++) {
+      if (todos[i].id === id) return i;
+    }
+    return -1;
+  }
+
+  function setLastSyncedItem(item) {
+    for (var i = 0; i < lastSynced.length; i++) {
+      if (lastSynced[i].id === item.id) {
+        lastSynced[i] = cloneItem(item);
+        return;
+      }
+    }
+    lastSynced.push(cloneItem(item));
+  }
+
+  function removeLastSyncedItem(id) {
+    lastSynced = lastSynced.filter(function (t) {
+      return t.id !== id;
+    });
+  }
+
+  /** 本地版本是否还有尚未提交到服务端的改动(本地新建也算) */
+  function hasUnsyncedChanges(item) {
+    for (var i = 0; i < lastSynced.length; i++) {
+      if (lastSynced[i].id === item.id) {
+        return lastSynced[i].text !== item.text || lastSynced[i].completed !== item.completed;
+      }
+    }
+    return true;
+  }
+
+  function trackUpdatedAt(value) {
+    if (typeof value === "number" && value > lastSyncAt) lastSyncAt = value;
   }
 
   function loadTodos() {
     return api.getTodos().then(function (items) {
       todos = core.sanitizeItems(items);
       lastSynced = todos.map(cloneItem);
+      lastSyncAt = 0;
+      todos.forEach(function (t) {
+        trackUpdatedAt(t.updatedAt);
+      });
       render();
       return todos;
     }).catch(function (err) {
@@ -89,13 +163,31 @@
       console.error("加载待办数据失败:", err);
       todos = [];
       lastSynced = [];
+      lastSyncAt = 0;
       render();
       return [];
     });
   }
 
+  /**
+   * 串行保存:计算本地状态与上次已同步快照的差异,逐项调用 CRUD 接口,
+   * 并把服务端返回的 updatedAt 合并回本地。串行化避免并发请求互相覆盖,
+   * 也让轮询只在没有写入时进行。
+   */
   function saveTodos() {
-    // 计算本地状态与上次已同步快照的差异,逐项调用 CRUD 接口同步
+    saveInFlight += 1;
+    saveQueue = saveQueue
+      .then(doSaveTodos)
+      .catch(function (err) {
+        console.error("保存待办数据失败:", err);
+      })
+      .then(function () {
+        saveInFlight -= 1;
+      });
+    return saveQueue;
+  }
+
+  function doSaveTodos() {
     var prevById = {};
     lastSynced.forEach(function (t) {
       prevById[t.id] = t;
@@ -109,21 +201,192 @@
     todos.forEach(function (t) {
       var prev = prevById[t.id];
       if (!prev) {
-        ops.push(api.createTodo(t));
+        ops.push({ type: "create", id: t.id, sent: cloneItem(t), promise: api.createTodo(t) });
       } else if (prev.text !== t.text || prev.completed !== t.completed) {
-        ops.push(api.updateTodo(t.id, { text: t.text, completed: t.completed }));
+        ops.push({
+          type: "update",
+          id: t.id,
+          sent: cloneItem(t),
+          promise: api.updateTodo(t.id, { text: t.text, completed: t.completed })
+        });
       }
     });
     lastSynced.forEach(function (t) {
       if (!currById[t.id]) {
-        ops.push(api.deleteTodo(t.id));
+        ops.push({ type: "delete", id: t.id, sent: null, promise: api.deleteTodo(t.id) });
       }
     });
 
-    return Promise.all(ops).then(function () {
-      lastSynced = todos.map(cloneItem);
-    }).catch(function (err) {
-      console.error("保存待办数据失败:", err);
+    if (!ops.length) return Promise.resolve();
+
+    return Promise.all(ops.map(function (op) {
+      return op.promise.then(function (res) {
+        if (op.type === "delete") {
+          removeLastSyncedItem(op.id);
+          return;
+        }
+        var serverItem =
+          res && typeof res === "object" && typeof res.id === "string"
+            ? {
+                id: res.id,
+                text: res.text,
+                completed: !!res.completed,
+                createdAt: res.createdAt,
+                updatedAt: res.updatedAt
+              }
+            : cloneItem(op.sent);
+        trackUpdatedAt(serverItem.updatedAt);
+        // 快照记录"服务端已确认的版本",这样请求期间的新本地改动下次仍会被提交
+        setLastSyncedItem(serverItem);
+
+        var idx = findTodoIndex(op.id);
+        if (idx >= 0) {
+          todos[idx].updatedAt = serverItem.updatedAt;
+          todos[idx].createdAt = serverItem.createdAt;
+        }
+      });
+    }));
+  }
+
+  /* ---------- 多端增量同步(轮询,页面隐藏时暂停) ---------- */
+
+  function isLoggedIn() {
+    return !!api && !!api.getToken() && !appView.hidden;
+  }
+
+  function startPolling() {
+    stopPolling();
+    pollTimer = window.setInterval(pollTodos, POLL_INTERVAL_MS);
+    // Node 测试环境下避免定时器阻止进程退出
+    if (pollTimer && typeof pollTimer.unref === "function") pollTimer.unref();
+  }
+
+  function stopPolling() {
+    if (pollTimer != null) {
+      window.clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  }
+
+  function pollTodos() {
+    if (!api || document.hidden || pollInFlight || saveInFlight > 0 || !isLoggedIn()) return;
+    pollInFlight = true;
+    api.getTodos(lastSyncAt)
+      .then(function (changes) {
+        // 请求期间可能已登出/切到登录页,避免把数据写回已关闭的视图
+        if (!isLoggedIn()) return;
+        applyRemoteChanges(changes);
+      })
+      .catch(function (err) {
+        console.error("增量同步失败:", err);
+      })
+      .then(function () {
+        pollInFlight = false;
+      });
+  }
+
+  /**
+   * 合并增量变更,last-write-wins:
+   *  - 服务端 updatedAt 较新:采用服务端版本,并提示"已在其他设备更新"
+   *  - 本地 updatedAt 较新:保留本地版本并重新提交
+   *  - 删除墓碑:服务端删除时间不早于本地版本时从本地移除
+   */
+  function applyRemoteChanges(changes) {
+    if (!Array.isArray(changes)) return;
+
+    var changed = false;
+    var conflict = false;
+    var needPush = false;
+
+    changes.forEach(function (remote) {
+      if (!remote || typeof remote !== "object" || typeof remote.id !== "string") return;
+
+      var remoteUpdatedAt = typeof remote.updatedAt === "number" ? remote.updatedAt : 0;
+      trackUpdatedAt(remoteUpdatedAt);
+
+      var idx = findTodoIndex(remote.id);
+      var local = idx >= 0 ? todos[idx] : null;
+
+      if (remote.deleted) {
+        if (!local) {
+          removeLastSyncedItem(remote.id);
+          return;
+        }
+        // 本地有未提交改动时先提交,避免轮询打断正在进行的操作
+        if (hasUnsyncedChanges(local)) {
+          needPush = true;
+          return;
+        }
+        removeLastSyncedItem(remote.id);
+        if (remoteUpdatedAt >= (local.updatedAt || 0)) {
+          todos.splice(idx, 1);
+          changed = true;
+          conflict = true;
+        } else {
+          needPush = true;
+        }
+        return;
+      }
+
+      var remoteItem = {
+        id: remote.id,
+        text: typeof remote.text === "string" ? remote.text : "",
+        completed: !!remote.completed,
+        createdAt: remote.createdAt,
+        updatedAt: remoteUpdatedAt
+      };
+
+      if (!local) {
+        todos.push(remoteItem);
+        setLastSyncedItem(remoteItem);
+        changed = true;
+        return;
+      }
+
+      var localUpdatedAt = typeof local.updatedAt === "number" ? local.updatedAt : 0;
+      if (hasUnsyncedChanges(local)) {
+        // 本地改动尚未提交:保留本地版本,稍后提交(本地视角下为更新的写入)
+        needPush = true;
+      } else if (remoteUpdatedAt > localUpdatedAt) {
+        if (local.text !== remoteItem.text || local.completed !== remoteItem.completed) {
+          conflict = true;
+        }
+        todos[idx] = remoteItem;
+        setLastSyncedItem(remoteItem);
+        changed = true;
+      } else if (remoteUpdatedAt === localUpdatedAt) {
+        setLastSyncedItem(remoteItem);
+      } else {
+        needPush = true;
+      }
+    });
+
+    if (changed) render();
+    if (conflict) showSyncNotice();
+    if (needPush) saveTodos();
+  }
+
+  function showSyncNotice() {
+    if (!syncNotice) return;
+    syncNotice.textContent = "已在其他设备更新";
+    syncNotice.hidden = false;
+    if (noticeTimer) window.clearTimeout(noticeTimer);
+    noticeTimer = window.setTimeout(function () {
+      syncNotice.hidden = true;
+      noticeTimer = null;
+    }, NOTICE_MS);
+    if (noticeTimer && typeof noticeTimer.unref === "function") noticeTimer.unref();
+  }
+
+  // 页面隐藏时暂停轮询;恢复可见时立即拉取一次并恢复轮询
+  if (typeof document.addEventListener === "function") {
+    document.addEventListener("visibilitychange", function () {
+      if (document.hidden) {
+        stopPolling();
+      } else if (isLoggedIn()) {
+        startPolling();
+        pollTodos();
+      }
     });
   }
 
@@ -335,6 +598,7 @@
     }).then(function () {
       todos = [];
       lastSynced = [];
+      lastSyncAt = 0;
       render();
       showAuth();
     });
@@ -345,6 +609,7 @@
     api.onUnauthorized = function () {
       todos = [];
       lastSynced = [];
+      lastSyncAt = 0;
       render();
       showAuth();
     };
