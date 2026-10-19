@@ -66,6 +66,31 @@
     return found ? next : todos;
   }
 
+  /**
+   * 修改指定 id 的待办文本,返回新数组(不修改入参)。
+   * 文本去除首尾空白后为空,或 id 不存在时,原样返回(同一引用)。
+   */
+  function editTodo(todos, id, text) {
+    var normalized = text == null ? "" : String(text).trim();
+    if (!normalized) return todos;
+
+    var found = false;
+    var next = todos.map(function (t) {
+      if (t.id === id) {
+        found = true;
+        return {
+          id: t.id,
+          text: normalized,
+          completed: t.completed,
+          createdAt: t.createdAt,
+          updatedAt: t.updatedAt
+        };
+      }
+      return t;
+    });
+    return found ? next : todos;
+  }
+
   /** 删除指定 id 的待办,返回新数组;id 不存在时原样返回 */
   function removeTodo(todos, id) {
     var next = todos.filter(function (t) { return t.id !== id; });
@@ -115,6 +140,7 @@
     createTodo: createTodo,
     addTodo: addTodo,
     toggleTodo: toggleTodo,
+    editTodo: editTodo,
     removeTodo: removeTodo,
     getVisibleTodos: getVisibleTodos,
     sanitizeItems: sanitizeItems,

@@ -132,6 +132,57 @@ test("toggleTodo id 不存在时返回原数组", () => {
   assert.strictEqual(core.toggleTodo(todos, "no-such-id"), todos);
 });
 
+/* ---------- editTodo ---------- */
+
+test("editTodo 修改指定 id 的文本并返回新数组", () => {
+  const todos = makeTodos([
+    { id: "a", text: "旧文本", completed: false },
+    { id: "b", text: "另一条", completed: true }
+  ]);
+
+  const next = core.editTodo(todos, "a", "新文本");
+
+  assert.notStrictEqual(next, todos);
+  assert.equal(next[0].text, "新文本");
+  assert.equal(next[0].completed, false, "完成状态应保持不变");
+  assert.equal(next[1].text, "另一条", "其他项不应被修改");
+});
+
+test("editTodo 自动去除首尾空白", () => {
+  const todos = makeTodos([{ id: "a", text: "旧文本" }]);
+  const next = core.editTodo(todos, "a", "  新文本  ");
+
+  assert.equal(next[0].text, "新文本");
+});
+
+test("editTodo 空文本/纯空白不修改并返回原数组(同一引用)", () => {
+  const todos = makeTodos([{ id: "a", text: "旧文本" }]);
+
+  assert.strictEqual(core.editTodo(todos, "a", ""), todos);
+  assert.strictEqual(core.editTodo(todos, "a", "   "), todos);
+  assert.strictEqual(core.editTodo(todos, "a", null), todos);
+  assert.equal(todos[0].text, "旧文本");
+});
+
+test("editTodo id 不存在时返回原数组(同一引用)", () => {
+  const todos = makeTodos([{ id: "a", text: "旧文本" }]);
+
+  assert.strictEqual(core.editTodo(todos, "no-such-id", "新文本"), todos);
+});
+
+test("editTodo 不修改入参(原数组与目标项均不变)", () => {
+  const todos = makeTodos([
+    { id: "a", text: "旧文本", completed: false },
+    { id: "b", text: "另一条", completed: true }
+  ]);
+  const snapshot = JSON.stringify(todos);
+
+  const next = core.editTodo(todos, "a", "新文本");
+
+  assert.notStrictEqual(next[0], todos[0], "目标项应为新对象");
+  assert.equal(JSON.stringify(todos), snapshot, "入参不应被修改");
+});
+
 /* ---------- removeTodo ---------- */
 
 test("removeTodo 删除指定 id 的待办", () => {
