@@ -72,6 +72,15 @@
     return next.length === todos.length ? todos : next;
   }
 
+  /**
+   * 移除所有已完成项,返回新数组(不修改入参)。
+   * 没有任何已完成项时原样返回入参,便于调用方用引用相等判断"无需写入"。
+   */
+  function clearCompleted(todos) {
+    var next = todos.filter(function (t) { return !t.completed; });
+    return next.length === todos.length ? todos : next;
+  }
+
   /** 按筛选状态过滤 */
   function getVisibleTodos(todos, filter) {
     switch (filter) {
@@ -116,6 +125,7 @@
     addTodo: addTodo,
     toggleTodo: toggleTodo,
     removeTodo: removeTodo,
+    clearCompleted: clearCompleted,
     getVisibleTodos: getVisibleTodos,
     sanitizeItems: sanitizeItems,
     getEmptyStateText: getEmptyStateText

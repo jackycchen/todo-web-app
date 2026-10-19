@@ -59,6 +59,7 @@
   var emptyState = document.getElementById("empty-state");
   var syncNotice = document.getElementById("sync-notice");
   var filterButtons = document.querySelectorAll(".filter-btn");
+  var clearCompletedBtn = document.getElementById("clear-completed");
 
   /* ---------- 认证 ---------- */
 
@@ -428,7 +429,16 @@
     });
 
     renderSummary();
+    renderClearCompletedButton();
     updateEmptyState(visible.length);
+  }
+
+  /** 仅当存在已完成项时,才显示并启用"清除已完成" */
+  function renderClearCompletedButton() {
+    if (!clearCompletedBtn) return;
+    var hasCompleted = todos.some(function (t) { return t.completed; });
+    clearCompletedBtn.hidden = !hasCompleted;
+    clearCompletedBtn.disabled = !hasCompleted;
   }
 
   function renderSummary() {
@@ -466,6 +476,7 @@
     todos = next;
     saveTodos();
     renderSummary();
+    renderClearCompletedButton();
 
     // 原地切换该条的完成状态,让 CSS 的划线 + 淡出过渡动画生效(而非整表重绘)
     var li = list.querySelector('[data-id="' + id + '"]');
@@ -503,6 +514,14 @@
   function removeTodo(id) {
     var next = core.removeTodo(todos, id);
     if (next.length === todos.length) return; // id 不存在,无变化
+    todos = next;
+    saveTodos();
+    render();
+  }
+
+  function clearCompleted() {
+    var next = core.clearCompleted(todos);
+    if (next === todos) return; // 没有已完成项:不写入、不重绘
     todos = next;
     saveTodos();
     render();
@@ -547,6 +566,10 @@
       setFilter(btn.dataset.filter);
     });
   });
+
+  if (clearCompletedBtn) {
+    clearCompletedBtn.addEventListener("click", clearCompleted);
+  }
 
   loginForm.addEventListener("submit", function (e) {
     e.preventDefault();
