@@ -275,7 +275,28 @@ body {
   min-width: 0;
   font-size: 15px;
   word-break: break-all;
+  cursor: text; /* 双击进入编辑态 */
   transition: color 0.35s ease;
+}
+
+/* 编辑态:高亮当前编辑项,输入框与文本保持同一视觉位置 */
+.todo-item.is-editing {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--focus-ring), var(--shadow);
+}
+
+.todo-edit-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 10px;
+  font-family: inherit;
+  font-size: 15px;
+  color: var(--text);
+  background: var(--card-bg);
+  border: 1px solid var(--primary);
+  border-radius: 8px;
+  outline: none;
+  box-shadow: 0 0 0 2px var(--focus-ring);
 }
 
 /* 已完成:整条淡化,文字划线从左到右绘制 */

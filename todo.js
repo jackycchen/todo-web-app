@@ -508,6 +508,67 @@
     render();
   }
 
+  /* ---------- 编辑待办 ---------- */
+
+  /**
+   * 进入编辑态:双击 .todo-text 时把文本替换为输入框。
+   * 同一时刻只允许一条待办处于编辑态。
+   */
+  function startEdit(li, id) {
+    if (!li || li.classList.contains("is-editing")) return;
+    var idx = findTodoIndex(id);
+    if (idx < 0) return;
+    var textEl = li.querySelector(".todo-text");
+    if (!textEl) return;
+
+    var editing = list.querySelector(".todo-item.is-editing");
+    if (editing && editing !== li) cancelEdit(editing);
+
+    var editor = document.createElement("input");
+    editor.type = "text";
+    editor.className = "todo-edit-input";
+    editor.value = todos[idx].text;
+    editor.setAttribute("aria-label", "编辑待办:「" + todos[idx].text + "」");
+    editor.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        commitEdit(li, id, editor);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        cancelEdit(li);
+      }
+    });
+
+    textEl.hidden = true;
+    li.classList.add("is-editing");
+    li.insertBefore(editor, textEl.nextSibling);
+    editor.focus();
+    if (typeof editor.select === "function") editor.select();
+  }
+
+  /** 保存编辑:仅当 core.editTodo 返回新数组时持久化并重绘 */
+  function commitEdit(li, id, editor) {
+    var next = core.editTodo(todos, id, editor.value);
+    if (next === todos) {
+      // 空白文本或 id 不存在:数据不变,仅退出编辑态
+      cancelEdit(li);
+      return;
+    }
+    todos = next;
+    saveTodos();
+    render();
+  }
+
+  /** 取消编辑,恢复原始文本展示 */
+  function cancelEdit(li) {
+    if (!li || !li.classList.contains("is-editing")) return;
+    var editor = li.querySelector(".todo-edit-input");
+    if (editor && editor.parentNode) editor.parentNode.removeChild(editor);
+    var textEl = li.querySelector(".todo-text");
+    if (textEl) textEl.hidden = false;
+    li.classList.remove("is-editing");
+  }
+
   function setFilter(filter) {
     currentFilter = filter;
     filterButtons.forEach(function (btn) {
@@ -540,6 +601,15 @@
     } else if (e.target.classList.contains("todo-checkbox")) {
       toggleTodo(id);
     }
+  });
+
+  // 双击文本进入编辑态(复选框/删除按钮等不受影响)
+  list.addEventListener("dblclick", function (e) {
+    var target = e.target;
+    if (!target || !target.classList || !target.classList.contains("todo-text")) return;
+    var li = target.closest(".todo-item");
+    if (!li) return;
+    startEdit(li, li.dataset.id);
   });
 
   filterButtons.forEach(function (btn) {
