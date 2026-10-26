@@ -170,6 +170,59 @@ test("removeTodo id 不存在时返回原数组", () => {
   assert.strictEqual(core.removeTodo(todos, "no-such-id"), todos);
 });
 
+/* ---------- clearCompleted ---------- */
+
+test("clearCompleted 移除所有已完成项,保留未完成项及其顺序", () => {
+  const todos = makeTodos([
+    { id: "a", text: "写代码", completed: true },
+    { id: "b", text: "写测试", completed: false },
+    { id: "c", text: "喝水", completed: true },
+    { id: "d", text: "散步", completed: false }
+  ]);
+
+  const next = core.clearCompleted(todos);
+
+  assert.deepEqual(next.map((t) => t.id), ["b", "d"]);
+});
+
+test("clearCompleted 全部已完成时返回空数组", () => {
+  const todos = makeTodos([
+    { id: "a", text: "写代码", completed: true },
+    { id: "b", text: "写测试", completed: true }
+  ]);
+
+  const next = core.clearCompleted(todos);
+
+  assert.notStrictEqual(next, todos);
+  assert.deepEqual(next, []);
+});
+
+test("clearCompleted 无已完成项时返回原数组(引用相同)", () => {
+  const todos = makeTodos([
+    { id: "a", text: "写代码", completed: false },
+    { id: "b", text: "写测试", completed: false }
+  ]);
+
+  assert.strictEqual(core.clearCompleted(todos), todos);
+
+  const empty = [];
+  assert.strictEqual(core.clearCompleted(empty), empty);
+});
+
+test("clearCompleted 不修改入参", () => {
+  const todos = makeTodos([
+    { id: "a", text: "写代码", completed: true },
+    { id: "b", text: "写测试", completed: false }
+  ]);
+  const snapshot = JSON.stringify(todos);
+
+  const next = core.clearCompleted(todos);
+
+  assert.notStrictEqual(next, todos);
+  assert.equal(JSON.stringify(todos), snapshot, "入参不应被修改");
+  assert.equal(todos.length, 2);
+});
+
 /* ---------- getVisibleTodos(联动筛选) ---------- */
 
 test("getVisibleTodos 按 active 只返回未完成项", () => {

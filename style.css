@@ -230,6 +230,23 @@ body {
   background: var(--primary);
 }
 
+.clear-completed-btn {
+  padding: 6px 16px;
+  margin-left: 4px;
+  font-size: 13px;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  border-left: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+
+.clear-completed-btn:hover {
+  color: var(--text);
+}
+
 /* 列表 */
 .todo-list {
   list-style: none;
