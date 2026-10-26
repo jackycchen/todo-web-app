@@ -255,3 +255,75 @@ test("非法筛选且视图为空时返回兜底文案", () => {
 test("非数组入参返回默认空状态文案", () => {
   assert.equal(core.getEmptyStateText(null, core.FILTERS.ALL), "暂无待办,添加一条开始吧 ✨");
 });
+
+/* ---------- getVisiblePage / getPaginationState(长列表分页) ---------- */
+
+test("默认每页 20 条", () => {
+  assert.equal(core.DEFAULT_PAGE_SIZE, 20);
+});
+
+test("getVisiblePage 只返回前 limit 条,不修改入参", () => {
+  const items = makeTodos(Array.from({ length: 25 }, (_, i) => ({ text: `任务 ${i}` })));
+  const snapshot = JSON.stringify(items);
+
+  const page = core.getVisiblePage(items, 20);
+
+  assert.equal(page.length, 20);
+  assert.equal(page[19].text, "任务 19");
+  assert.equal(JSON.stringify(items), snapshot, "入参不应被修改");
+  assert.notStrictEqual(page, items, "应返回新数组");
+});
+
+test("getVisiblePage 条目不足一页时返回完整副本", () => {
+  const items = makeTodos([{ text: "a" }, { text: "b" }]);
+  const page = core.getVisiblePage(items, 20);
+
+  assert.equal(page.length, 2);
+  assert.notStrictEqual(page, items);
+  assert.deepEqual(page, items);
+});
+
+test("getVisiblePage 非法 limit 回落到默认页大小", () => {
+  const items = makeTodos(Array.from({ length: 25 }, (_, i) => ({ text: `任务 ${i}` })));
+  assert.equal(core.getVisiblePage(items, 0).length, 20);
+  assert.equal(core.getVisiblePage(items, -5).length, 20);
+  assert.equal(core.getVisiblePage(items, NaN).length, 20);
+  assert.equal(core.getVisiblePage(items, "bogus").length, 20);
+});
+
+test("getVisiblePage 非数组入参返回空数组", () => {
+  assert.deepEqual(core.getVisiblePage(null, 20), []);
+  assert.deepEqual(core.getVisiblePage("oops", 20), []);
+});
+
+test("getPaginationState 计算已显示/剩余/是否还有更多", () => {
+  assert.deepEqual(core.getPaginationState(25, 20), {
+    total: 25,
+    shown: 20,
+    remaining: 5,
+    hasMore: true,
+    pageSize: 20
+  });
+
+  assert.deepEqual(core.getPaginationState(25, 40), {
+    total: 25,
+    shown: 25,
+    remaining: 0,
+    hasMore: false,
+    pageSize: 40
+  });
+
+  assert.deepEqual(core.getPaginationState(8, 20), {
+    total: 8,
+    shown: 8,
+    remaining: 0,
+    hasMore: false,
+    pageSize: 20
+  });
+});
+
+test("getPaginationState 非法总数按 0 处理", () => {
+  assert.equal(core.getPaginationState(-3, 20).total, 0);
+  assert.equal(core.getPaginationState(NaN, 20).shown, 0);
+  assert.equal(core.getPaginationState(undefined, 20).hasMore, false);
+});

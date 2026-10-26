@@ -13,6 +13,19 @@
   var TRANSITION_MS = 350;
 
   /**
+   * 长列表分页大小:默认每页 20 条,可通过 window.TODO_PAGE_SIZE 覆盖(测试用)。
+   * 列表只渲染当前页,DOM 中不会出现全部条目,超长列表滚动更流畅。
+   */
+  var configuredPageSize = typeof window !== "undefined" ? Number(window.TODO_PAGE_SIZE) : NaN;
+  var PAGE_SIZE =
+    Number.isFinite(configuredPageSize) && configuredPageSize >= 1
+      ? Math.floor(configuredPageSize)
+      : core.DEFAULT_PAGE_SIZE;
+
+  /** 当前已加载(已渲染)的可见条目上限;切换筛选或重新登录时重置为一页 */
+  var visibleLimit = PAGE_SIZE;
+
+  /**
    * 增量同步轮询间隔(ms)。默认 5s,可通过 window.TODO_POLL_INTERVAL_MS 覆盖
    * (测试用),上限 10s(验收要求 10 秒内同步)。
    */
@@ -57,6 +70,12 @@
   var statsCompleted = document.getElementById("stats-completed");
   var statsTotal = document.getElementById("stats-total");
   var emptyState = document.getElementById("empty-state");
+  var emptyStateTitle = document.getElementById("empty-state-title");
+  var emptyStateHint = document.getElementById("empty-state-text");
+  var emptyStateAction = document.getElementById("empty-state-action");
+  var pagination = document.getElementById("list-pagination");
+  var listStatus = document.getElementById("list-status");
+  var loadMoreBtn = document.getElementById("load-more-btn");
   var syncNotice = document.getElementById("sync-notice");
   var filterButtons = document.querySelectorAll(".filter-btn");
 
@@ -153,6 +172,7 @@
       todos = core.sanitizeItems(items);
       lastSynced = todos.map(cloneItem);
       lastSyncAt = 0;
+      visibleLimit = PAGE_SIZE;
       todos.forEach(function (t) {
         trackUpdatedAt(t.updatedAt);
       });
@@ -164,6 +184,7 @@
       todos = [];
       lastSynced = [];
       lastSyncAt = 0;
+      visibleLimit = PAGE_SIZE;
       render();
       return [];
     });
@@ -294,6 +315,8 @@
   function applyRemoteChanges(changes) {
     if (!Array.isArray(changes)) return;
 
+    // 用户已把当前列表全部展开(可能不止一页)时,远端新增后继续展开,避免无谓翻页
+    var wasShowingAll = visibleLimit >= getVisibleTodos().length;
     var changed = false;
     var conflict = false;
     var needPush = false;
@@ -361,7 +384,14 @@
       }
     });
 
-    if (changed) render();
+    if (changed) {
+      // 仅当用户主动加载过不止一页时,才跟随远端新增继续展开;
+      // 否则保持一页上限,避免一次同步把大量条目全部塞进 DOM。
+      if (wasShowingAll && visibleLimit > PAGE_SIZE) {
+        visibleLimit = Math.max(visibleLimit, getVisibleTodos().length);
+      }
+      render();
+    }
     if (conflict) showSyncNotice();
     if (needPush) saveTodos();
   }
@@ -398,37 +428,44 @@
 
   function render() {
     var visible = getVisibleTodos();
+    // 只渲染当前已加载的一页,剩余条目由「加载更多」按需追加
+    var page = core.getVisiblePage(visible, visibleLimit);
 
     list.innerHTML = "";
-    visible.forEach(function (todo) {
-      var li = document.createElement("li");
-      li.className = "todo-item" + (todo.completed ? " is-completed" : "");
-      li.dataset.id = todo.id;
-
-      var checkbox = document.createElement("input");
-      checkbox.type = "checkbox";
-      checkbox.className = "todo-checkbox";
-      checkbox.checked = todo.completed;
-      checkbox.setAttribute("aria-label", todo.completed ? "标记为未完成" : "标记为已完成");
-
-      var text = document.createElement("span");
-      text.className = "todo-text";
-      text.textContent = todo.text;
-
-      var del = document.createElement("button");
-      del.type = "button";
-      del.className = "todo-delete-btn";
-      del.textContent = "删除";
-      del.setAttribute("aria-label", "删除:「" + todo.text + "」");
-
-      li.appendChild(checkbox);
-      li.appendChild(text);
-      li.appendChild(del);
-      list.appendChild(li);
+    page.forEach(function (todo) {
+      list.appendChild(createTodoItem(todo));
     });
 
     renderSummary();
     updateEmptyState(visible.length);
+    renderPagination(visible.length);
+  }
+
+  function createTodoItem(todo) {
+    var li = document.createElement("li");
+    li.className = "todo-item" + (todo.completed ? " is-completed" : "");
+    li.dataset.id = todo.id;
+
+    var checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.className = "todo-checkbox";
+    checkbox.checked = todo.completed;
+    checkbox.setAttribute("aria-label", todo.completed ? "标记为未完成" : "标记为已完成");
+
+    var text = document.createElement("span");
+    text.className = "todo-text";
+    text.textContent = todo.text;
+
+    var del = document.createElement("button");
+    del.type = "button";
+    del.className = "todo-delete-btn";
+    del.textContent = "删除";
+    del.setAttribute("aria-label", "删除:「" + todo.text + "」");
+
+    li.appendChild(checkbox);
+    li.appendChild(text);
+    li.appendChild(del);
+    return li;
   }
 
   function renderSummary() {
@@ -438,11 +475,102 @@
   }
 
   function updateEmptyState(visibleCount) {
-    if (visibleCount === 0) {
-      emptyState.textContent = core.getEmptyStateText(todos, currentFilter);
-      emptyState.hidden = false;
-    } else {
+    if (visibleCount > 0) {
       emptyState.hidden = true;
+      return;
+    }
+
+    emptyState.hidden = false;
+    if (emptyStateTitle) emptyStateTitle.textContent = getEmptyStateTitle();
+    if (emptyStateHint) {
+      emptyStateHint.textContent =
+        todos.length === 0
+          ? "点击上方输入框,添加你的第一条待办吧 ✨"
+          : core.getEmptyStateText(todos, currentFilter) || "";
+    }
+    // 只有"完全没有待办"时提供添加引导;筛选无匹配时添加按钮没有意义
+    if (emptyStateAction) emptyStateAction.hidden = todos.length !== 0;
+  }
+
+  function getEmptyStateTitle() {
+    if (todos.length === 0) return "还没有待办事项";
+    if (currentFilter === FILTERS.ACTIVE) return "全部完成啦";
+    if (currentFilter === FILTERS.COMPLETED) return "还没有已完成的事项";
+    return "暂无待办";
+  }
+
+  /** 分页状态条:总数超过一页时展示,并区分"还有更多"与"已全部加载" */
+  function renderPagination(total) {
+    if (!pagination) return;
+    if (total <= PAGE_SIZE) {
+      pagination.hidden = true;
+      return;
+    }
+
+    var state = core.getPaginationState(total, visibleLimit);
+    pagination.hidden = false;
+    if (listStatus) {
+      listStatus.textContent = state.hasMore
+        ? "已显示 " + state.shown + " / " + state.total + " 项"
+        : "已全部加载,共 " + state.total + " 项";
+    }
+    if (!loadMoreBtn) return;
+    loadMoreBtn.hidden = !state.hasMore;
+    loadMoreBtn.textContent = "加载更多(还剩 " + state.remaining + " 项)";
+    loadMoreBtn.setAttribute(
+      "aria-label",
+      "加载更多待办,当前已显示 " + state.shown + " 项,共 " + state.total + " 项"
+    );
+  }
+
+  /**
+   * 加载下一页。focusFirstNew 为 true 时(用户点击按钮),把焦点移到新出现的
+   * 第一条待办上,避免按钮消失后键盘焦点丢失;无限滚动触发时不抢焦点。
+   */
+  function loadMore(focusFirstNew) {
+    var visible = getVisibleTodos();
+    var state = core.getPaginationState(visible.length, visibleLimit);
+    if (!state.hasMore) return;
+
+    var prevShown = state.shown;
+    visibleLimit = prevShown + PAGE_SIZE;
+    render();
+
+    if (!focusFirstNew) return;
+    var firstNew = list.children[prevShown];
+    if (!firstNew || typeof firstNew.querySelector !== "function") return;
+    var checkbox = firstNew.querySelector(".todo-checkbox");
+    if (checkbox && typeof checkbox.focus === "function") checkbox.focus();
+  }
+
+  /** 新添加的待办若落在当前页之外,自动扩展到对应页,保证用户能立刻看到 */
+  function ensureTodoVisible(id) {
+    var visible = getVisibleTodos();
+    for (var i = 0; i < visible.length; i++) {
+      if (visible[i].id !== id) continue;
+      if (i >= visibleLimit) {
+        visibleLimit = Math.ceil((i + 1) / PAGE_SIZE) * PAGE_SIZE;
+      }
+      return;
+    }
+  }
+
+  /** 滚动到列表底部附近时自动加载下一页(IntersectionObserver 不可用时退回按钮) */
+  function setupInfiniteScroll() {
+    if (!loadMoreBtn || typeof window.IntersectionObserver !== "function") return;
+    try {
+      var observer = new window.IntersectionObserver(function (entries) {
+        for (var i = 0; i < entries.length; i++) {
+          if (entries[i].isIntersecting) {
+            loadMore(false);
+            return;
+          }
+        }
+      }, { rootMargin: "160px 0px" });
+      observer.observe(loadMoreBtn);
+    } catch (err) {
+      // 观察器初始化失败时,用户仍可通过「加载更多」按钮分页
+      console.error("初始化无限滚动失败:", err);
     }
   }
 
@@ -456,6 +584,7 @@
       return;
     }
     todos = next;
+    ensureTodoVisible(todos[todos.length - 1].id);
     saveTodos();
     render();
   }
@@ -494,8 +623,8 @@
     if (!staysInView) {
       li.classList.add("is-leaving");
       window.setTimeout(function () {
-        li.remove();
-        updateEmptyState(getVisibleTodos().length);
+        // 过渡结束后重绘,顺带补齐当前页(避免移出后页面出现空位)
+        render();
       }, TRANSITION_MS);
     }
   }
@@ -510,6 +639,8 @@
 
   function setFilter(filter) {
     currentFilter = filter;
+    // 切换筛选后从第一页开始,避免沿用上个筛选的加载深度
+    visibleLimit = PAGE_SIZE;
     filterButtons.forEach(function (btn) {
       btn.classList.toggle("is-active", btn.dataset.filter === filter);
     });
@@ -547,6 +678,18 @@
       setFilter(btn.dataset.filter);
     });
   });
+
+  if (loadMoreBtn) {
+    loadMoreBtn.addEventListener("click", function () {
+      loadMore(true);
+    });
+  }
+
+  if (emptyStateAction) {
+    emptyStateAction.addEventListener("click", function () {
+      input.focus();
+    });
+  }
 
   loginForm.addEventListener("submit", function (e) {
     e.preventDefault();
@@ -599,6 +742,7 @@
       todos = [];
       lastSynced = [];
       lastSyncAt = 0;
+      visibleLimit = PAGE_SIZE;
       render();
       showAuth();
     });
@@ -610,6 +754,7 @@
       todos = [];
       lastSynced = [];
       lastSyncAt = 0;
+      visibleLimit = PAGE_SIZE;
       render();
       showAuth();
     };
@@ -640,6 +785,9 @@
 
   /* 初始图标:跟随当前生效的主题(含系统默认) */
   themeToggle.classList.toggle("is-dark", resolveTheme() === "dark");
+
+  /* 长列表:滚动到底部自动加载下一页(按钮始终保留,便于键盘/不支持时降级) */
+  setupInfiniteScroll();
 
   /* ---------- 启动 ---------- */
   // 已有 token 时尝试恢复会话,否则展示登录页
