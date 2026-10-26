@@ -99,9 +99,24 @@
       <button type="button" class="filter-btn" data-filter="completed">已完成</button>
     </nav>
 
-    <ul id="todo-list" class="todo-list"></ul>
+    <ul id="todo-list" class="todo-list" aria-label="待办列表"></ul>
 
-    <p id="empty-state" class="empty-state" hidden>暂无待办,添加一条开始吧 ✨</p>
+    <div id="empty-state" class="empty-state" role="status" aria-live="polite" aria-atomic="true" hidden>
+      <svg class="empty-state-illustration" viewBox="0 0 120 120" width="112" height="112" aria-hidden="true" focusable="false">
+        <circle class="empty-state-blob" cx="60" cy="60" r="52"></circle>
+        <rect class="empty-state-paper" x="36" y="26" width="48" height="68" rx="8"></rect>
+        <path class="empty-state-line" d="M47 46h26M47 58h20M47 70h24"></path>
+        <path class="empty-state-check" d="M47 86l6 6 13-15"></path>
+      </svg>
+      <p id="empty-state-title" class="empty-state-title">还没有待办事项</p>
+      <p id="empty-state-text" class="empty-state-hint">点击上方输入框,添加你的第一条待办吧 ✨</p>
+      <button type="button" id="empty-state-action" class="empty-state-action">添加第一个待办</button>
+    </div>
+
+    <div id="list-pagination" class="list-pagination" hidden>
+      <p id="list-status" class="list-status" role="status" aria-live="polite"></p>
+      <button type="button" id="load-more-btn" class="load-more-btn">加载更多</button>
+    </div>
   </main>
 
   <script src="todo-core.js"></script>

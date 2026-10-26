@@ -333,10 +333,135 @@ body {
 
 /* 空状态 */
 .empty-state {
-  padding: 40px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-top: 8px;
+  padding: 36px 20px 32px;
   text-align: center;
-  font-size: 14px;
+  background: var(--card-bg);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+}
+
+.empty-state[hidden] {
+  display: none;
+}
+
+.empty-state-illustration {
+  margin-bottom: 8px;
+}
+
+.empty-state-blob {
+  fill: var(--bg-accent);
+}
+
+.empty-state-paper {
+  fill: var(--card-bg);
+  stroke: var(--border);
+  stroke-width: 3;
+}
+
+.empty-state-line {
+  stroke: var(--text-muted);
+  stroke-width: 3;
+  stroke-linecap: round;
+  opacity: 0.6;
+}
+
+.empty-state-check {
+  fill: none;
+  stroke: var(--primary);
+  stroke-width: 4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.empty-state-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.empty-state-hint {
+  margin-top: 4px;
+  font-size: 13px;
   color: var(--text-muted);
+}
+
+.empty-state-action {
+  margin-top: 16px;
+  padding: 9px 20px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--primary);
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.empty-state-action:hover {
+  background: var(--primary-hover);
+}
+
+.empty-state-action[hidden] {
+  display: none;
+}
+
+/* 长列表分页:只渲染当前页,其余通过「加载更多」按需追加 */
+.list-pagination {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0 2px;
+}
+
+.list-pagination[hidden] {
+  display: none;
+}
+
+.list-status {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.load-more-btn {
+  padding: 9px 22px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--primary);
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+
+.load-more-btn:hover {
+  color: #fff;
+  background: var(--primary);
+  border-color: var(--primary);
+}
+
+.load-more-btn[hidden] {
+  display: none;
+}
+
+.empty-state-action:focus-visible,
+.load-more-btn:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* 键盘聚焦时也显示删除按钮(鼠标悬停之外的可访问路径) */
+.todo-delete-btn:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
 }
 
 /* 登录 / 注册 */
