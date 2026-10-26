@@ -75,6 +75,34 @@
     return next.length === todos.length ? todos : next;
   }
 
+  /**
+   * 统计待办数量,供「还剩 N 项未完成」等实时计数使用。
+   * 非数组入参按空列表处理;返回新对象,不修改入参。
+   */
+  function getStats(todos) {
+    var list = Array.isArray(todos) ? todos : [];
+    var completed = list.filter(function (t) {
+      return !!t && t.completed;
+    }).length;
+    return {
+      total: list.length,
+      completed: completed,
+      remaining: list.length - completed
+    };
+  }
+
+  /**
+   * 清除所有已完成待办,返回新数组;未完成项原样保留。
+   * 没有可清除项时返回原数组引用,便于调用方跳过无意义的重绘/写入。
+   */
+  function clearCompleted(todos) {
+    if (!Array.isArray(todos)) return [];
+    var next = todos.filter(function (t) {
+      return !(t && t.completed);
+    });
+    return next.length === todos.length ? todos : next;
+  }
+
   /** 按筛选状态过滤 */
   function getVisibleTodos(todos, filter) {
     switch (filter) {
@@ -161,6 +189,8 @@
     addTodo: addTodo,
     toggleTodo: toggleTodo,
     removeTodo: removeTodo,
+    getStats: getStats,
+    clearCompleted: clearCompleted,
     getVisibleTodos: getVisibleTodos,
     getVisiblePage: getVisiblePage,
     getPaginationState: getPaginationState,

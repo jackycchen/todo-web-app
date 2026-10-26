@@ -12,6 +12,19 @@
   /** 完成/淡出过渡时长(ms),需与 style.css 中的过渡时长保持一致 */
   var TRANSITION_MS = 350;
 
+  /** 「清除已完成」二次确认超时(ms):超时未再点击则自动恢复为普通按钮 */
+  var configuredConfirmMs = typeof window !== "undefined" ? Number(window.TODO_CLEAR_CONFIRM_MS) : NaN;
+  var CLEAR_CONFIRM_MS =
+    Number.isFinite(configuredConfirmMs) && configuredConfirmMs > 0 ? configuredConfirmMs : 4000;
+
+  /** 清除结果提示的展示时长(ms) */
+  var configuredClearStatusMs =
+    typeof window !== "undefined" ? Number(window.TODO_CLEAR_STATUS_MS) : NaN;
+  var CLEAR_STATUS_MS =
+    Number.isFinite(configuredClearStatusMs) && configuredClearStatusMs > 0
+      ? configuredClearStatusMs
+      : 4000;
+
   /**
    * 长列表分页大小:默认每页 20 条,可通过 window.TODO_PAGE_SIZE 覆盖(测试用)。
    * 列表只渲染当前页,DOM 中不会出现全部条目,超长列表滚动更流畅。
@@ -53,6 +66,12 @@
   var saveQueue = Promise.resolve();
   var noticeTimer = null;
 
+  /** 「清除已完成」的二次确认状态 */
+  var clearConfirming = false;
+  var clearConfirmCount = 0;
+  var clearConfirmTimer = null;
+  var clearStatusTimer = null;
+
   /* ---------- DOM 引用 ---------- */
 
   var authView = document.getElementById("auth-view");
@@ -78,6 +97,10 @@
   var loadMoreBtn = document.getElementById("load-more-btn");
   var syncNotice = document.getElementById("sync-notice");
   var filterButtons = document.querySelectorAll(".filter-btn");
+  var todoPanel = document.getElementById("todo-panel");
+  var remainingCountNumber = document.getElementById("remaining-count-number");
+  var clearCompletedBtn = document.getElementById("clear-completed-btn");
+  var clearStatus = document.getElementById("clear-status");
 
   /* ---------- 认证 ---------- */
 
@@ -93,6 +116,8 @@
 
   function showAuth() {
     stopPolling();
+    resetClearConfirm(false);
+    hideClearStatus();
     authView.hidden = false;
     appView.hidden = true;
   }
@@ -469,9 +494,66 @@
   }
 
   function renderSummary() {
-    var completedCount = todos.filter(function (t) { return t.completed; }).length;
-    statsCompleted.textContent = completedCount;
-    statsTotal.textContent = todos.length;
+    var stats = core.getStats(todos);
+    statsCompleted.textContent = stats.completed;
+    statsTotal.textContent = stats.total;
+    if (remainingCountNumber) remainingCountNumber.textContent = stats.remaining;
+    updateClearButton(stats.completed);
+  }
+
+  /** 同步「清除已完成」按钮的可用状态、二次确认文案与无障碍属性 */
+  function updateClearButton(completedCount) {
+    if (!clearCompletedBtn) return;
+    var count =
+      typeof completedCount === "number" ? completedCount : core.getStats(todos).completed;
+
+    // 没有可清除项,或确认期间数据发生变化(新增/勾选/同步)时,取消确认态避免误删
+    if (count <= 0 || (clearConfirming && count !== clearConfirmCount)) {
+      resetClearConfirm(false);
+    }
+
+    var confirming = clearConfirming && count > 0;
+    clearCompletedBtn.disabled = count <= 0;
+    clearCompletedBtn.textContent = confirming ? "确认清除 " + count + " 项?" : "清除已完成";
+    clearCompletedBtn.classList.toggle("is-confirming", confirming);
+    clearCompletedBtn.setAttribute(
+      "aria-label",
+      confirming
+        ? "确认清除 " + count + " 项已完成待办,再次点击生效"
+        : "清除已完成待办" + (count > 0 ? ",共 " + count + " 项" : ",当前没有已完成项")
+    );
+  }
+
+  function resetClearConfirm(update) {
+    clearConfirming = false;
+    clearConfirmCount = 0;
+    if (clearConfirmTimer != null) {
+      window.clearTimeout(clearConfirmTimer);
+      clearConfirmTimer = null;
+    }
+    if (update) updateClearButton();
+  }
+
+  function hideClearStatus() {
+    if (clearStatusTimer != null) {
+      window.clearTimeout(clearStatusTimer);
+      clearStatusTimer = null;
+    }
+    if (clearStatus) clearStatus.hidden = true;
+  }
+
+  function showClearStatus(message) {
+    if (!clearStatus) return;
+    clearStatus.textContent = message;
+    clearStatus.hidden = false;
+    if (clearStatusTimer != null) window.clearTimeout(clearStatusTimer);
+    clearStatusTimer = window.setTimeout(function () {
+      clearStatusTimer = null;
+      clearStatus.hidden = true;
+    }, CLEAR_STATUS_MS);
+    if (clearStatusTimer && typeof clearStatusTimer.unref === "function") {
+      clearStatusTimer.unref();
+    }
   }
 
   function updateEmptyState(visibleCount) {
@@ -637,14 +719,104 @@
     render();
   }
 
+  /** 同步筛选标签的选中态、tabindex 与关联的 tabpanel 标签 */
+  function syncFilterTabs() {
+    filterButtons.forEach(function (btn) {
+      var active = btn.dataset.filter === currentFilter;
+      btn.classList.toggle("is-active", active);
+      btn.setAttribute("aria-selected", active ? "true" : "false");
+      btn.setAttribute("tabindex", active ? "0" : "-1");
+      btn.setAttribute("aria-controls", "todo-panel");
+    });
+    if (todoPanel) {
+      todoPanel.setAttribute("aria-labelledby", "filter-tab-" + currentFilter);
+    }
+  }
+
+  /** 方向键 / Home / End 在标签间移动焦点并切换筛选(ARIA tabs 键盘模式) */
+  function onFilterKeydown(e) {
+    var key = e.key;
+    if (key !== "ArrowLeft" && key !== "ArrowRight" && key !== "Home" && key !== "End") return;
+
+    var currentIndex = 0;
+    for (var i = 0; i < filterButtons.length; i++) {
+      if (filterButtons[i].dataset.filter === currentFilter) {
+        currentIndex = i;
+        break;
+      }
+    }
+
+    var nextIndex = currentIndex;
+    if (key === "ArrowLeft") {
+      nextIndex = (currentIndex - 1 + filterButtons.length) % filterButtons.length;
+    } else if (key === "ArrowRight") {
+      nextIndex = (currentIndex + 1) % filterButtons.length;
+    } else if (key === "Home") {
+      nextIndex = 0;
+    } else if (key === "End") {
+      nextIndex = filterButtons.length - 1;
+    }
+
+    var next = filterButtons[nextIndex];
+    if (!next) return;
+    if (typeof e.preventDefault === "function") e.preventDefault();
+    setFilter(next.dataset.filter);
+    if (typeof next.focus === "function") next.focus();
+  }
+
   function setFilter(filter) {
+    if (filter !== FILTERS.ALL && filter !== FILTERS.ACTIVE && filter !== FILTERS.COMPLETED) {
+      return;
+    }
     currentFilter = filter;
     // 切换筛选后从第一页开始,避免沿用上个筛选的加载深度
     visibleLimit = PAGE_SIZE;
-    filterButtons.forEach(function (btn) {
-      btn.classList.toggle("is-active", btn.dataset.filter === filter);
-    });
+    // 切换标签时取消未完成的「清除已完成」二次确认
+    resetClearConfirm(false);
+    syncFilterTabs();
     render();
+  }
+
+  /**
+   * 「清除已完成」二次确认:
+   * 第一次点击只进入确认态(不删数据),再次点击才真正清除;
+   * 超时或数据变化会自动退出确认态,避免误删。
+   */
+  function onClearCompletedClick() {
+    var completedCount = core.getStats(todos).completed;
+    if (completedCount <= 0) {
+      updateClearButton(completedCount);
+      return;
+    }
+
+    if (!clearConfirming) {
+      clearConfirming = true;
+      clearConfirmCount = completedCount;
+      updateClearButton(completedCount);
+      if (clearConfirmTimer != null) window.clearTimeout(clearConfirmTimer);
+      clearConfirmTimer = window.setTimeout(function () {
+        clearConfirmTimer = null;
+        resetClearConfirm(true);
+      }, CLEAR_CONFIRM_MS);
+      if (clearConfirmTimer && typeof clearConfirmTimer.unref === "function") {
+        clearConfirmTimer.unref();
+      }
+      return;
+    }
+
+    resetClearConfirm(false);
+    var next = core.clearCompleted(todos);
+    if (next === todos) {
+      updateClearButton(completedCount);
+      return;
+    }
+
+    todos = next;
+    // 清除后从第一页重新开始,避免保留过大的已加载深度
+    visibleLimit = PAGE_SIZE;
+    saveTodos();
+    render();
+    showClearStatus("已清除 " + completedCount + " 项已完成待办");
   }
 
   /* ---------- 事件绑定 ---------- */
@@ -677,7 +849,12 @@
     btn.addEventListener("click", function () {
       setFilter(btn.dataset.filter);
     });
+    btn.addEventListener("keydown", onFilterKeydown);
   });
+
+  if (clearCompletedBtn) {
+    clearCompletedBtn.addEventListener("click", onClearCompletedClick);
+  }
 
   if (loadMoreBtn) {
     loadMoreBtn.addEventListener("click", function () {
@@ -788,6 +965,9 @@
 
   /* 长列表:滚动到底部自动加载下一页(按钮始终保留,便于键盘/不支持时降级) */
   setupInfiniteScroll();
+
+  /* 初始化筛选标签的选中态与可访问性属性 */
+  syncFilterTabs();
 
   /* ---------- 启动 ---------- */
   // 已有 token 时尝试恢复会话,否则展示登录页

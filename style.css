@@ -225,9 +225,90 @@ body {
   color: var(--text);
 }
 
-.filter-btn.is-active {
+.filter-btn.is-active,
+.filter-btn[aria-selected="true"] {
   color: #fff;
   background: var(--primary);
+}
+
+.filter-btn:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* 筛选工具栏:标签 + 实时计数 + 清除已完成 */
+.filter-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.filter-toolbar .filters {
+  align-self: flex-start;
+  margin-bottom: 0;
+}
+
+.list-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.remaining-count {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.remaining-count strong {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.clear-completed-btn {
+  padding: 6px 14px;
+  font-size: 13px;
+  color: var(--danger);
+  background: var(--danger-bg);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s, border-color 0.15s, opacity 0.15s;
+}
+
+.clear-completed-btn:hover:not(:disabled) {
+  border-color: var(--danger);
+}
+
+/* 二次确认态:按钮转为实心危险色,明确"再次点击才会删除" */
+.clear-completed-btn.is-confirming {
+  color: #fff;
+  background: var(--danger);
+}
+
+.clear-completed-btn:disabled {
+  color: var(--text-muted);
+  background: transparent;
+  border-color: var(--border);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.clear-completed-btn:focus-visible {
+  outline: 2px solid var(--danger);
+  outline-offset: 2px;
+}
+
+.clear-status {
+  font-size: 13px;
+  color: var(--primary);
+}
+
+.clear-status[hidden] {
+  display: none;
 }
 
 /* 列表 */

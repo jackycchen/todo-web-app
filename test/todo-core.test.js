@@ -170,6 +170,87 @@ test("removeTodo id 不存在时返回原数组", () => {
   assert.strictEqual(core.removeTodo(todos, "no-such-id"), todos);
 });
 
+/* ---------- getStats(实时计数) ---------- */
+
+test("getStats 统计总数、已完成与未完成数量", () => {
+  const todos = makeTodos([
+    { id: "a", text: "写代码", completed: false },
+    { id: "b", text: "写测试", completed: true },
+    { id: "c", text: "写文档", completed: false }
+  ]);
+
+  assert.deepEqual(core.getStats(todos), { total: 3, completed: 1, remaining: 2 });
+});
+
+test("getStats 空数组与非数组入参返回零值", () => {
+  assert.deepEqual(core.getStats([]), { total: 0, completed: 0, remaining: 0 });
+  assert.deepEqual(core.getStats(null), { total: 0, completed: 0, remaining: 0 });
+  assert.deepEqual(core.getStats("oops"), { total: 0, completed: 0, remaining: 0 });
+});
+
+test("getStats 不修改入参", () => {
+  const todos = makeTodos([{ id: "a", text: "写代码", completed: true }]);
+  const snapshot = JSON.stringify(todos);
+
+  const stats = core.getStats(todos);
+
+  assert.notStrictEqual(stats, todos);
+  assert.equal(JSON.stringify(todos), snapshot);
+});
+
+/* ---------- clearCompleted(一键清除已完成) ---------- */
+
+test("clearCompleted 只删除已完成项,保留进行中的项", () => {
+  const todos = makeTodos([
+    { id: "a", text: "进行中 1", completed: false },
+    { id: "b", text: "已完成 1", completed: true },
+    { id: "c", text: "进行中 2", completed: false },
+    { id: "d", text: "已完成 2", completed: true }
+  ]);
+
+  const next = core.clearCompleted(todos);
+
+  assert.deepEqual(next.map((t) => t.id), ["a", "c"]);
+  assert.ok(next.every((t) => !t.completed));
+});
+
+test("clearCompleted 返回新数组,不修改入参", () => {
+  const todos = makeTodos([
+    { id: "a", text: "进行中", completed: false },
+    { id: "b", text: "已完成", completed: true }
+  ]);
+  const snapshot = JSON.stringify(todos);
+
+  const next = core.clearCompleted(todos);
+
+  assert.notStrictEqual(next, todos);
+  assert.equal(JSON.stringify(todos), snapshot);
+});
+
+test("clearCompleted 没有已完成项时返回原数组引用", () => {
+  const todos = makeTodos([
+    { id: "a", text: "进行中 1", completed: false },
+    { id: "b", text: "进行中 2", completed: false }
+  ]);
+
+  assert.strictEqual(core.clearCompleted(todos), todos);
+});
+
+test("clearCompleted 非数组入参返回空数组", () => {
+  assert.deepEqual(core.clearCompleted(null), []);
+  assert.deepEqual(core.clearCompleted(undefined), []);
+  assert.deepEqual(core.clearCompleted("oops"), []);
+});
+
+test("clearCompleted 全部为已完成时得到空数组", () => {
+  const todos = makeTodos([
+    { id: "a", text: "已完成 1", completed: true },
+    { id: "b", text: "已完成 2", completed: true }
+  ]);
+
+  assert.deepEqual(core.clearCompleted(todos), []);
+});
+
 /* ---------- getVisibleTodos(联动筛选) ---------- */
 
 test("getVisibleTodos 按 active 只返回未完成项", () => {
