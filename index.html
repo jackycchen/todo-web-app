@@ -93,15 +93,44 @@
       <button type="submit" class="todo-add-btn">添加</button>
     </form>
 
-    <nav class="filters" aria-label="筛选">
-      <button type="button" class="filter-btn is-active" data-filter="all">全部</button>
-      <button type="button" class="filter-btn" data-filter="active">未完成</button>
-      <button type="button" class="filter-btn" data-filter="completed">已完成</button>
-    </nav>
+    <div class="filter-toolbar">
+      <div class="filters" role="tablist" aria-label="筛选待办">
+        <button type="button" id="filter-tab-all" class="filter-btn is-active" data-filter="all" role="tab" aria-selected="true" aria-controls="todo-panel" tabindex="0">全部</button>
+        <button type="button" id="filter-tab-active" class="filter-btn" data-filter="active" role="tab" aria-selected="false" aria-controls="todo-panel" tabindex="-1">进行中</button>
+        <button type="button" id="filter-tab-completed" class="filter-btn" data-filter="completed" role="tab" aria-selected="false" aria-controls="todo-panel" tabindex="-1">已完成</button>
+      </div>
 
-    <ul id="todo-list" class="todo-list"></ul>
+      <div class="list-toolbar">
+        <p id="remaining-count" class="remaining-count" role="status" aria-live="polite" aria-atomic="true">
+          还剩 <strong id="remaining-count-number">0</strong> 项未完成
+        </p>
+        <button type="button" id="clear-completed-btn" class="clear-completed-btn" disabled aria-label="清除已完成待办">
+          清除已完成
+        </button>
+      </div>
+      <p id="clear-status" class="clear-status" role="status" aria-live="polite" hidden></p>
+    </div>
 
-    <p id="empty-state" class="empty-state" hidden>暂无待办,添加一条开始吧 ✨</p>
+    <div id="todo-panel" class="todo-panel" role="tabpanel" aria-labelledby="filter-tab-all">
+      <ul id="todo-list" class="todo-list" aria-label="待办列表"></ul>
+
+      <div id="empty-state" class="empty-state" role="status" aria-live="polite" aria-atomic="true" hidden>
+        <svg class="empty-state-illustration" viewBox="0 0 120 120" width="112" height="112" aria-hidden="true" focusable="false">
+          <circle class="empty-state-blob" cx="60" cy="60" r="52"></circle>
+          <rect class="empty-state-paper" x="36" y="26" width="48" height="68" rx="8"></rect>
+          <path class="empty-state-line" d="M47 46h26M47 58h20M47 70h24"></path>
+          <path class="empty-state-check" d="M47 86l6 6 13-15"></path>
+        </svg>
+        <p id="empty-state-title" class="empty-state-title">还没有待办事项</p>
+        <p id="empty-state-text" class="empty-state-hint">点击上方输入框,添加你的第一条待办吧 ✨</p>
+        <button type="button" id="empty-state-action" class="empty-state-action">添加第一个待办</button>
+      </div>
+
+      <div id="list-pagination" class="list-pagination" hidden>
+        <p id="list-status" class="list-status" role="status" aria-live="polite"></p>
+        <button type="button" id="load-more-btn" class="load-more-btn">加载更多</button>
+      </div>
+    </div>
   </main>
 
   <script src="todo-core.js"></script>

@@ -225,9 +225,90 @@ body {
   color: var(--text);
 }
 
-.filter-btn.is-active {
+.filter-btn.is-active,
+.filter-btn[aria-selected="true"] {
   color: #fff;
   background: var(--primary);
+}
+
+.filter-btn:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* 筛选工具栏:标签 + 实时计数 + 清除已完成 */
+.filter-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.filter-toolbar .filters {
+  align-self: flex-start;
+  margin-bottom: 0;
+}
+
+.list-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.remaining-count {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.remaining-count strong {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.clear-completed-btn {
+  padding: 6px 14px;
+  font-size: 13px;
+  color: var(--danger);
+  background: var(--danger-bg);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s, border-color 0.15s, opacity 0.15s;
+}
+
+.clear-completed-btn:hover:not(:disabled) {
+  border-color: var(--danger);
+}
+
+/* 二次确认态:按钮转为实心危险色,明确"再次点击才会删除" */
+.clear-completed-btn.is-confirming {
+  color: #fff;
+  background: var(--danger);
+}
+
+.clear-completed-btn:disabled {
+  color: var(--text-muted);
+  background: transparent;
+  border-color: var(--border);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.clear-completed-btn:focus-visible {
+  outline: 2px solid var(--danger);
+  outline-offset: 2px;
+}
+
+.clear-status {
+  font-size: 13px;
+  color: var(--primary);
+}
+
+.clear-status[hidden] {
+  display: none;
 }
 
 /* 列表 */
@@ -333,10 +414,135 @@ body {
 
 /* 空状态 */
 .empty-state {
-  padding: 40px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-top: 8px;
+  padding: 36px 20px 32px;
   text-align: center;
-  font-size: 14px;
+  background: var(--card-bg);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+}
+
+.empty-state[hidden] {
+  display: none;
+}
+
+.empty-state-illustration {
+  margin-bottom: 8px;
+}
+
+.empty-state-blob {
+  fill: var(--bg-accent);
+}
+
+.empty-state-paper {
+  fill: var(--card-bg);
+  stroke: var(--border);
+  stroke-width: 3;
+}
+
+.empty-state-line {
+  stroke: var(--text-muted);
+  stroke-width: 3;
+  stroke-linecap: round;
+  opacity: 0.6;
+}
+
+.empty-state-check {
+  fill: none;
+  stroke: var(--primary);
+  stroke-width: 4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.empty-state-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.empty-state-hint {
+  margin-top: 4px;
+  font-size: 13px;
   color: var(--text-muted);
+}
+
+.empty-state-action {
+  margin-top: 16px;
+  padding: 9px 20px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--primary);
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.empty-state-action:hover {
+  background: var(--primary-hover);
+}
+
+.empty-state-action[hidden] {
+  display: none;
+}
+
+/* 长列表分页:只渲染当前页,其余通过「加载更多」按需追加 */
+.list-pagination {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0 2px;
+}
+
+.list-pagination[hidden] {
+  display: none;
+}
+
+.list-status {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.load-more-btn {
+  padding: 9px 22px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--primary);
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+
+.load-more-btn:hover {
+  color: #fff;
+  background: var(--primary);
+  border-color: var(--primary);
+}
+
+.load-more-btn[hidden] {
+  display: none;
+}
+
+.empty-state-action:focus-visible,
+.load-more-btn:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* 键盘聚焦时也显示删除按钮(鼠标悬停之外的可访问路径) */
+.todo-delete-btn:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
 }
 
 /* 登录 / 注册 */
