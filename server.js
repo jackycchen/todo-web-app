@@ -12,10 +12,11 @@
 const path = require("node:path");
 const crypto = require("node:crypto");
 const express = require("express");
-const { openDb } = require("./lib/db.js");
+const { openDb, getSessionTtlMs } = require("./lib/db.js");
 const core = require("./todo-core.js");
 
 const DEFAULT_PORT = 3000;
+const SESSION_CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // 每小时
 
 const PASSWORD_MIN_LENGTH = 6;
 const USERNAME_MAX_LENGTH = 50;
@@ -71,7 +72,11 @@ function createApp(options = {}) {
   function auth(req, res, next) {
     const token = bearerToken(req);
     const user = token ? store.getUserByToken(token) : undefined;
-    if (!user) return res.status(401).json({ error: "未登录或登录已过期" });
+    if (!user) {
+      // 惰性清理:过期(或已失效)的 token 顺手删除,避免过期行长期堆积
+      if (token) store.deleteSession(token);
+      return res.status(401).json({ error: "未登录或登录已过期" });
+    }
     req.userId = user.id;
     req.username = user.username;
     req.token = token;
@@ -96,9 +101,10 @@ function createApp(options = {}) {
     if (store.getUserByUsername(username)) {
       return res.status(409).json({ error: "用户名已存在" });
     }
-    const userId = store.createUser(username, hashPassword(body.password), Date.now());
+    const now = Date.now();
+    const userId = store.createUser(username, hashPassword(body.password), now);
     const token = crypto.randomBytes(32).toString("hex");
-    store.createSession(userId, token, Date.now());
+    store.createSession(userId, token, now, now + getSessionTtlMs());
     res.status(201).json({ token, username });
   });
 
@@ -112,13 +118,17 @@ function createApp(options = {}) {
     if (!user || !verifyPassword(body.password, user.password_hash)) {
       return res.status(401).json({ error: "用户名或密码错误" });
     }
+    const now = Date.now();
     const token = crypto.randomBytes(32).toString("hex");
-    store.createSession(user.id, token, Date.now());
+    store.createSession(user.id, token, now, now + getSessionTtlMs());
     res.json({ token, username: user.username });
   });
 
-  app.post("/api/logout", auth, (req, res) => {
-    store.deleteSession(req.token);
+  // 登出幂等:无论会话是否仍有效,都删除(不存在的删除是 no-op)并返回 204,
+  // 重复登出不会因为 token 已失效而报 401。
+  app.post("/api/logout", (req, res) => {
+    const token = bearerToken(req);
+    if (token) store.deleteSession(token);
     res.status(204).end();
   });
 
@@ -197,11 +207,36 @@ function createApp(options = {}) {
 }
 
 /**
+ * 启动会话清理:立即执行一次,之后按 intervalMs 周期执行。
+ * 定时器调用 unref(),不阻止进程退出。
+ */
+function startSessionCleanup(store, intervalMs = SESSION_CLEANUP_INTERVAL_MS) {
+  if (!store || typeof store.cleanupExpiredSessions !== "function") return null;
+  const run = () => {
+    try {
+      store.cleanupExpiredSessions(Date.now());
+    } catch (err) {
+      // 清理失败不应影响服务本身,记录后等待下一轮
+      console.error("清理过期会话失败:", err);
+    }
+  };
+  run();
+  const timer = setInterval(run, intervalMs);
+  if (typeof timer.unref === "function") timer.unref();
+  return timer;
+}
+
+/**
  * 启动服务器。返回 Promise<{ server, app, port }>。
  * options.port 为 0 时监听随机可用端口(便于测试)。
  */
 function startServer(options = {}) {
-  const app = createApp(options);
+  // 只打开一个数据库连接:先建 store,再交给 createApp 复用
+  const store =
+    options.store ||
+    openDb(options.dbPath || process.env.TODO_DB_PATH || path.join(__dirname, "data", "todo.db"));
+  const app = createApp({ ...options, store });
+  const cleanupTimer = startSessionCleanup(store);
   let port;
   if (options.port !== undefined) {
     port = options.port;
@@ -211,7 +246,7 @@ function startServer(options = {}) {
   }
   return new Promise((resolve, reject) => {
     const server = app.listen(port, () => {
-      resolve({ server, app, port: server.address().port });
+      resolve({ server, app, port: server.address().port, store, cleanupTimer });
     });
     server.on("error", reject);
   });
@@ -229,4 +264,10 @@ if (require.main === module) {
     });
 }
 
-module.exports = { createApp, startServer, hashPassword, verifyPassword };
+module.exports = {
+  createApp,
+  startServer,
+  startSessionCleanup,
+  hashPassword,
+  verifyPassword
+};
