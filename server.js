@@ -20,6 +20,20 @@ const DEFAULT_PORT = 3000;
 const PASSWORD_MIN_LENGTH = 6;
 const USERNAME_MAX_LENGTH = 50;
 
+/**
+ * 允许匿名访问的静态资源(白名单)。
+ * 只列出前端页面直接引用的文件;未列出的路径一律 404,不会落到磁盘读取,
+ * 因此 server.js、lib/**、test/**、package.json、data/** 等不会被暴露。
+ * 新增前端资源时必须显式加入此集合。
+ */
+const STATIC_ASSETS = new Set([
+  "index.html",
+  "style.css",
+  "todo-core.js",
+  "api.js",
+  "todo.js",
+]);
+
 function hashPassword(password) {
   const salt = crypto.randomBytes(16);
   const derived = crypto.scryptSync(String(password), salt, 64);
@@ -184,14 +198,15 @@ function createApp(options = {}) {
     res.status(204).end();
   });
 
-  // ---------- 静态文件(阻止访问服务端数据目录) ----------
+  // ---------- 静态文件(仅托管白名单内的前端资源) ----------
+  // 采用白名单而非排除法: 不在 STATIC_ASSETS 中的路径直接 404,
+  // express.static 永远看不到它们,后续新增的源码/测试/配置文件默认不暴露。
   app.use((req, res, next) => {
-    if (req.path === "/data" || req.path.startsWith("/data/")) {
-      return res.status(404).end();
-    }
-    next();
+    if (req.method !== "GET" && req.method !== "HEAD") return next();
+    if (req.path === "/" || STATIC_ASSETS.has(req.path.slice(1))) return next();
+    return res.status(404).end();
   });
-  app.use(express.static(staticDir));
+  app.use(express.static(staticDir, { index: "index.html", redirect: false }));
 
   return app;
 }
