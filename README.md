@@ -41,7 +41,7 @@ npm start
 | GET | `/api/health` | 健康检查 | 
 | POST | `/api/register` | 注册,body `{ username, password }`,返回 `{ token, username }` |
 | POST | `/api/login` | 登录,body 同上,返回 `{ token, username }` |
-| POST | `/api/logout` | 登出(需鉴权) |
+| POST | `/api/logout` | 登出,删除当前会话(幂等,重复调用仍返回 204) |
 | GET | `/api/me` | 获取当前登录用户(需鉴权) |
 | GET | `/api/todos` | 列出当前用户全部未删除待办(需鉴权) |
 | GET | `/api/todos?since=<ms>` | 增量拉取 `updatedAt > since` 的变更,含删除墓碑(需鉴权) |
@@ -62,6 +62,23 @@ npm start
   `deleted: true` 的条目,其他端据此移除本地项。
 - 旧数据库自动迁移:`ALTER TABLE` 新增 `updated_at` / `deleted` 列,
   旧记录 `updated_at` 回填为 `created_at`。
+
+### 会话生命周期
+
+- 登录/注册成功签发 token 时会写入 `created_at` 与 `expires_at`(均为毫秒时间戳)。
+- 会话默认有效期 **30 天**,可用环境变量 `SESSION_TTL_DAYS` 覆盖(正数天数):
+
+  ```bash
+  SESSION_TTL_DAYS=7 npm start
+  ```
+
+- 鉴权时过期会话一律按未登录处理(返回 401),并顺手删除该行(惰性清理),
+  避免过期行长期堆积。
+- 服务启动时清理一次过期会话,之后每小时清理一次;定时器调用 `unref()`,
+  不会阻止进程退出。
+- 登出删除当前会话;重复登出仍返回 204(幂等)。
+- 旧数据库自动迁移:`ALTER TABLE sessions ADD COLUMN expires_at`,并按
+  `created_at + SESSION_TTL_DAYS` 回填,老会话不会全部失效,也不会全部变成永久有效。
 
 ## 单元与集成测试
 
@@ -92,6 +109,7 @@ npm test
 | `test/api-client.test.js` | 前端 API 客户端单元测试(假 fetch) |
 | `test/frontend.test.js` | 前端端到端测试(DOM 轻量桩,含双端轮询同步) |
 | `test/migration.test.js` | 旧库迁移测试(ALTER TABLE + updatedAt 回填) |
+| `test/session.test.js` | 会话生命周期测试(过期 401 / 惰性删除 / 定时清理 / expires_at 迁移) |
 
 push 验证 2026-10-16
 PR 创建验证 2026-10-16
