@@ -26,6 +26,8 @@ npm start
 
 - 用户名 + 密码注册/登录,**密码经 scrypt 加盐哈希存储,不保存明文**
 - 登录后返回会话 token,后续请求通过 `Authorization: Bearer <token>` 鉴权
+- **会话有过期时间**:默认 7 天,可用 `TODO_SESSION_TTL_MS` 覆盖;
+  过期 token 一律返回 401,过期记录会被定期清理
 - 待办数据按用户在服务端隔离,任何浏览器登录同一账号都能看到同样数据
 - 会话失效(任一 API 返回 401)时自动清除本地 token 并回到登录页,重新登录即可继续
 - **多端实时同步**:客户端每 5 秒轮询一次 `GET /api/todos?since=<上次同步时间>`,
@@ -39,8 +41,8 @@ npm start
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/health` | 健康检查 | 
-| POST | `/api/register` | 注册,body `{ username, password }`,返回 `{ token, username }` |
-| POST | `/api/login` | 登录,body 同上,返回 `{ token, username }` |
+| POST | `/api/register` | 注册,body `{ username, password }`,返回 `{ token, username, expiresAt }` |
+| POST | `/api/login` | 登录,body 同上,返回 `{ token, username, expiresAt }` |
 | POST | `/api/logout` | 登出(需鉴权) |
 | GET | `/api/me` | 获取当前登录用户(需鉴权) |
 | GET | `/api/todos` | 列出当前用户全部未删除待办(需鉴权) |
@@ -62,6 +64,20 @@ npm start
   `deleted: true` 的条目,其他端据此移除本地项。
 - 旧数据库自动迁移:`ALTER TABLE` 新增 `updated_at` / `deleted` 列,
   旧记录 `updated_at` 回填为 `created_at`。
+
+### 会话有效期与清理
+
+- 每次登录/注册都会写入 `sessions.created_at` 与 `sessions.expires_at`;
+  `expires_at = created_at + TTL`,默认 TTL 为 **7 天**。
+- 鉴权时同时校验 `created_at` 与 `expires_at`,任一过期即视为无效并返回 401,
+  因此 token 不会永久有效。
+- 过期会话记录会被删除:服务端启动时清理一次,之后每小时清理一次
+  (`deleteExpiredSessions` / `cleanupExpiredSessions`);被用于请求的失效
+  token 也会立即删除。
+- TTL 可通过 `TODO_SESSION_TTL_MS`(毫秒)或 `openDb(dbPath, { sessionTtlMs })`
+  配置,非法值回退默认值,上限 1 年。
+- 旧库(`sessions` 只有 `created_at`)自动 `ALTER TABLE` 补 `expires_at`,
+  并按 `created_at + TTL` 回填。
 
 ## 单元与集成测试
 
@@ -92,6 +108,7 @@ npm test
 | `test/api-client.test.js` | 前端 API 客户端单元测试(假 fetch) |
 | `test/frontend.test.js` | 前端端到端测试(DOM 轻量桩,含双端轮询同步) |
 | `test/migration.test.js` | 旧库迁移测试(ALTER TABLE + updatedAt 回填) |
+| `test/session.test.js` | 会话有效期/过期清理/旧会话表迁移测试 |
 
 push 验证 2026-10-16
 PR 创建验证 2026-10-16

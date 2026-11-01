@@ -12,13 +12,21 @@
 const path = require("node:path");
 const crypto = require("node:crypto");
 const express = require("express");
-const { openDb } = require("./lib/db.js");
+const {
+  openDb,
+  resolveSessionTtlMs,
+  DEFAULT_SESSION_TTL_MS,
+  MAX_SESSION_TTL_MS
+} = require("./lib/db.js");
 const core = require("./todo-core.js");
 
 const DEFAULT_PORT = 3000;
 
 const PASSWORD_MIN_LENGTH = 6;
 const USERNAME_MAX_LENGTH = 50;
+
+// 过期会话的定期清理间隔:默认 1 小时
+const DEFAULT_SESSION_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 
 function hashPassword(password) {
   const salt = crypto.randomBytes(16);
@@ -61,17 +69,27 @@ function bearerToken(req) {
 function createApp(options = {}) {
   const dbPath =
     options.dbPath || process.env.TODO_DB_PATH || path.join(__dirname, "data", "todo.db");
-  const store = options.store || openDb(dbPath);
+  const sessionTtlMs = resolveSessionTtlMs(
+    options.sessionTtlMs !== undefined ? options.sessionTtlMs : process.env.TODO_SESSION_TTL_MS
+  );
+  const store = options.store || openDb(dbPath, { sessionTtlMs });
   const staticDir = options.staticDir || __dirname;
+  // 可注入时钟,便于测试会话过期而无需真实等待
+  const now = typeof options.now === "function" ? options.now : Date.now;
 
   const app = express();
+  app.locals.store = store;
+  app.locals.sessionTtlMs = store.sessionTtlMs || sessionTtlMs;
   app.use(express.json());
 
-  // 从 Bearer token 解析当前用户
+  // 从 Bearer token 解析当前用户;过期/无效 token 一并清理
   function auth(req, res, next) {
     const token = bearerToken(req);
-    const user = token ? store.getUserByToken(token) : undefined;
-    if (!user) return res.status(401).json({ error: "未登录或登录已过期" });
+    const user = token ? store.getUserByToken(token, now()) : undefined;
+    if (!user) {
+      if (token) store.deleteSession(token);
+      return res.status(401).json({ error: "未登录或登录已过期" });
+    }
     req.userId = user.id;
     req.username = user.username;
     req.token = token;
@@ -96,10 +114,11 @@ function createApp(options = {}) {
     if (store.getUserByUsername(username)) {
       return res.status(409).json({ error: "用户名已存在" });
     }
-    const userId = store.createUser(username, hashPassword(body.password), Date.now());
+    const createdAt = now();
+    const userId = store.createUser(username, hashPassword(body.password), createdAt);
     const token = crypto.randomBytes(32).toString("hex");
-    store.createSession(userId, token, Date.now());
-    res.status(201).json({ token, username });
+    const session = store.createSession(userId, token, createdAt);
+    res.status(201).json({ token, username, expiresAt: session.expiresAt });
   });
 
   app.post("/api/login", (req, res) => {
@@ -113,8 +132,8 @@ function createApp(options = {}) {
       return res.status(401).json({ error: "用户名或密码错误" });
     }
     const token = crypto.randomBytes(32).toString("hex");
-    store.createSession(user.id, token, Date.now());
-    res.json({ token, username: user.username });
+    const session = store.createSession(user.id, token, now());
+    res.json({ token, username: user.username, expiresAt: session.expiresAt });
   });
 
   app.post("/api/logout", auth, (req, res) => {
@@ -199,9 +218,12 @@ function createApp(options = {}) {
 /**
  * 启动服务器。返回 Promise<{ server, app, port }>。
  * options.port 为 0 时监听随机可用端口(便于测试)。
+ * options.cleanupIntervalMs 可覆盖过期会话清理间隔(测试或运维调优用)。
  */
 function startServer(options = {}) {
   const app = createApp(options);
+  const store = app.locals.store;
+  const clock = typeof options.now === "function" ? options.now : Date.now;
   let port;
   if (options.port !== undefined) {
     port = options.port;
@@ -209,11 +231,37 @@ function startServer(options = {}) {
     const envPort = Number(process.env.PORT);
     port = Number.isFinite(envPort) && envPort > 0 ? envPort : DEFAULT_PORT;
   }
+
+  const cleanupIntervalMs =
+    Number.isSafeInteger(options.cleanupIntervalMs) && options.cleanupIntervalMs > 0
+      ? options.cleanupIntervalMs
+      : DEFAULT_SESSION_CLEANUP_INTERVAL_MS;
+
+  // 启动时先清理一次历史过期会话,之后定期清理,避免 sessions 表无限增长
+  const supportsCleanup = typeof store.deleteExpiredSessions === "function";
+  const cleanup = () => {
+    if (!supportsCleanup) return;
+    try {
+      store.deleteExpiredSessions(clock());
+    } catch (err) {
+      console.error("清理过期会话失败:", err);
+    }
+  };
+  cleanup();
+  const cleanupTimer = setInterval(cleanup, cleanupIntervalMs);
+  // 不阻止进程退出(测试里尤其重要)
+  if (typeof cleanupTimer.unref === "function") cleanupTimer.unref();
+
   return new Promise((resolve, reject) => {
     const server = app.listen(port, () => {
+      const clearCleanup = () => clearInterval(cleanupTimer);
+      server.once("close", clearCleanup);
       resolve({ server, app, port: server.address().port });
     });
-    server.on("error", reject);
+    server.on("error", (err) => {
+      clearInterval(cleanupTimer);
+      reject(err);
+    });
   });
 }
 
@@ -229,4 +277,12 @@ if (require.main === module) {
     });
 }
 
-module.exports = { createApp, startServer, hashPassword, verifyPassword };
+module.exports = {
+  createApp,
+  startServer,
+  hashPassword,
+  verifyPassword,
+  DEFAULT_SESSION_TTL_MS,
+  MAX_SESSION_TTL_MS,
+  resolveSessionTtlMs
+};
