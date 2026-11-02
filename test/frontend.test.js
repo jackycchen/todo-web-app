@@ -214,7 +214,9 @@ after(async () => {
   }
 });
 
-const flush = () => new Promise((r) => setTimeout(r, 120));
+// 等待异步请求落地。注册/登录包含 scrypt 哈希,并行跑测试文件时可能超过 100ms,
+// 固定 120ms 偶发不足,这里留足余量以避免用例抖动。
+const flush = () => new Promise((r) => setTimeout(r, 300));
 
 // ---------- 页面交互辅助 ----------
 function fillInput(id, value) {
@@ -265,8 +267,8 @@ function editorAt(index) {
   return getElement("todo-list").children[index].children[1];
 }
 
-function pressEnter(editor) {
-  editor.handlers.keydown[0]({ key: "Enter", preventDefault() {} });
+function pressEnter(editor, extra) {
+  editor.handlers.keydown[0](Object.assign({ key: "Enter", preventDefault() {} }, extra));
 }
 
 function pressEscape(editor) {
@@ -516,4 +518,73 @@ test("编辑支持 Esc 取消与空白文本回退,失焦保存", async () => {
   assert.equal(items[0].text, "失焦保存的任务");
   list = await serverTodos();
   assert.equal(list[0].text, "失焦保存的任务", "失焦时应提交编辑");
+});
+
+test("输入法组合期间的 Enter/Esc 不触发保存或取消", async () => {
+  dblclickText(0);
+  const editor = editorAt(0);
+  editor.value = "输入法未确认的内容";
+
+  // 中文输入法确认候选词时也会产生 Enter 键,应保持编辑态
+  pressEnter(editor, { isComposing: true });
+  assert.ok(
+    editorAt(0).classList.contains("todo-edit-input"),
+    "组合期间的 Enter 不应结束编辑"
+  );
+  assert.equal(
+    editorAt(0).value,
+    "输入法未确认的内容",
+    "组合期间输入框应保留用户正在输入的内容"
+  );
+
+  const list = await serverTodos();
+  assert.equal(list[0].text, "失焦保存的任务", "组合期间不应写入服务端");
+
+  // keyCode 229 的旧浏览器兼容路径同样不触发
+  editor.value = "旧浏览器输入法";
+  pressEnter(editor, { keyCode: 229 });
+  assert.ok(editorAt(0).classList.contains("todo-edit-input"), "keyCode 229 不应结束编辑");
+
+  // 清理:Esc 取消编辑
+  pressEscape(editorAt(0));
+  assert.equal(renderedItems()[0].text, "失焦保存的任务");
+});
+
+test("轮询重绘不丢失正在编辑的内容", async () => {
+  dblclickText(0);
+  let editor = editorAt(0);
+  assert.ok(editor.classList.contains("todo-edit-input"));
+  editor.value = "轮询中未提交的输入";
+
+  // 模拟另一会话新增待办:本端增量轮询合并后会整表重绘
+  const loginRes = await fetch(`${base}/api/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "erin", password: "secret123" }),
+  });
+  const { token } = await loginRes.json();
+  const createRes = await fetch(`${base}/api/todos`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+    body: JSON.stringify({ text: "另一端的待办" }),
+  });
+  assert.equal(createRes.status, 201);
+
+  // 轮询间隔 150ms:等待若干轮,期间应发生重绘
+  await new Promise((r) => setTimeout(r, 500));
+
+  const items = renderedItems();
+  assert.ok(
+    items.some((t) => t.text === "另一端的待办"),
+    "轮询应合并远端新增并触发重绘"
+  );
+  editor = editorAt(0);
+  assert.ok(editor.classList.contains("todo-edit-input"), "重绘后应仍在编辑状态");
+  assert.equal(editor.value, "轮询中未提交的输入", "重绘不应丢失已输入内容");
+
+  // Esc 取消:丢弃未提交输入,恢复原文
+  pressEscape(editor);
+  const after = renderedItems();
+  assert.equal(after[0].text, "失焦保存的任务");
+  assert.ok(after.some((t) => t.text === "另一端的待办"));
 });

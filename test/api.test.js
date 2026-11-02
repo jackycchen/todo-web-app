@@ -213,6 +213,18 @@ test("切换完成状态并改名", async () => {
   assert.equal((await renamed.json()).text, "已改名");
 });
 
+test("PATCH 空白文本返回 400 且不修改原内容", async () => {
+  const { data } = await login("alice", "secret123");
+  const created = await createTodo(data.token, "原始内容");
+
+  const res = await patch("/api/todos/" + created.data.id, { text: "   " }, data.token);
+  assert.equal(res.status, 400);
+
+  const list = await (await get("/api/todos", data.token)).json();
+  const found = list.find((t) => t.id === created.data.id);
+  assert.equal(found.text, "原始内容", "被拒绝的 PATCH 不应改动服务端数据");
+});
+
 test("删除待办后清单为空", async () => {
   const { data } = await login("alice", "secret123");
   const created = await createTodo(data.token, "待删除");

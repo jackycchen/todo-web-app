@@ -426,6 +426,9 @@
     editor.setAttribute("title", "回车保存,Esc 取消");
 
     editor.addEventListener("keydown", function (e) {
+      // 输入法组合期间(如中文候选词)的 Enter/Esc 用于确认/取消候选,
+      // 不应触发保存或取消编辑。keyCode 229 兼容部分旧浏览器。
+      if (e.isComposing || e.keyCode === 229) return;
       if (e.key === "Enter") {
         e.preventDefault();
         commitEdit(todo.id, editor.value);
@@ -480,7 +483,7 @@
     // 重绘前取出编辑中的内容,轮询同步等重绘不应丢失用户正在输入的文字
     var pending = null;
     if (editingId !== null) {
-      var activeEditor = list.querySelector(".todo-edit-input");
+      var activeEditor = findEditorElement(editingId);
       if (activeEditor) {
         pending = {
           value: activeEditor.value,
@@ -530,7 +533,7 @@
         // 正在编辑的条目已不在当前视图(被删除或被筛选掉),结束编辑态
         editingId = null;
       } else {
-        var editor = list.querySelector(".todo-edit-input");
+        var editor = findEditorElement(editingId);
         if (editor) {
           editor.focus();
           if (
