@@ -265,6 +265,9 @@
 
     if (!ops.length) return Promise.resolve();
 
+    // 服务端是 id 的唯一来源:新建成功后本地 id 可能被替换,需要重绘 DOM 上的 data-id
+    var idChanged = false;
+
     return Promise.all(ops.map(function (op) {
       return op.promise.then(function (res) {
         if (op.type === "delete") {
@@ -282,16 +285,23 @@
               }
             : cloneItem(op.sent);
         trackUpdatedAt(serverItem.updatedAt);
-        // 快照记录"服务端已确认的版本",这样请求期间的新本地改动下次仍会被提交
-        setLastSyncedItem(serverItem);
 
         var idx = findTodoIndex(op.id);
         if (idx >= 0) {
+          // 新建时服务端会生成正式 id,替换掉本地临时 id
+          if (todos[idx].id !== serverItem.id) {
+            todos[idx].id = serverItem.id;
+            idChanged = true;
+          }
           todos[idx].updatedAt = serverItem.updatedAt;
           todos[idx].createdAt = serverItem.createdAt;
         }
+        // 快照记录"服务端已确认的版本",这样请求期间的新本地改动下次仍会被提交
+        setLastSyncedItem(serverItem);
       });
-    }));
+    })).then(function () {
+      if (idChanged) render();
+    });
   }
 
   /* ---------- 多端增量同步(轮询,页面隐藏时暂停) ---------- */

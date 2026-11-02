@@ -26,6 +26,27 @@ const SESSION_CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // 每小时
 
 const PASSWORD_MIN_LENGTH = 6;
 const USERNAME_MAX_LENGTH = 50;
+// 与前端输入框的 maxlength 保持一致;服务端必须独立校验,不能依赖前端限制
+const TODO_TEXT_MAX_LENGTH = 200;
+
+/**
+ * 校验并清洗待办文本。
+ * 返回 { text } 或 { error }。长度按 trim 后的 UTF-16 码元计算,
+ * 与浏览器 maxlength 的计量方式一致。
+ */
+function parseTodoText(value) {
+  if (typeof value !== "string") {
+    return { error: "待办内容不能为空" };
+  }
+  const text = value.trim();
+  if (!text) {
+    return { error: "待办内容不能为空" };
+  }
+  if (text.length > TODO_TEXT_MAX_LENGTH) {
+    return { error: "待办内容最多 " + TODO_TEXT_MAX_LENGTH + " 个字符" };
+  }
+  return { text };
+}
 
 /**
  * 允许匿名访问的静态资源(白名单)。
@@ -191,15 +212,17 @@ function createApp(options = {}) {
 
   app.post("/api/todos", auth, (req, res) => {
     const body = req.body || {};
-    const text = typeof body.text === "string" ? body.text.trim() : "";
-    if (!text) {
-      return res.status(400).json({ error: "待办内容不能为空" });
+    const parsed = parseTodoText(body.text);
+    if (parsed.error) {
+      return res.status(400).json({ error: parsed.error });
     }
+    // id 与 createdAt 完全由服务端生成:客户端传入的同名字段一律忽略,
+    // 避免伪造 id 覆盖已有数据或伪造创建时间。
     const item = {
-      id: typeof body.id === "string" && body.id.trim() ? body.id : core.generateId(),
-      text,
+      id: crypto.randomUUID(),
+      text: parsed.text,
       completed: !!body.completed,
-      createdAt: Number.isFinite(body.createdAt) ? body.createdAt : Date.now()
+      createdAt: now()
     };
     res.status(201).json(store.insertTodo(req.userId, item));
   });
@@ -208,9 +231,9 @@ function createApp(options = {}) {
     const body = req.body || {};
     const patch = {};
     if (body.text !== undefined) {
-      const text = typeof body.text === "string" ? body.text.trim() : "";
-      if (!text) return res.status(400).json({ error: "待办内容不能为空" });
-      patch.text = text;
+      const parsed = parseTodoText(body.text);
+      if (parsed.error) return res.status(400).json({ error: parsed.error });
+      patch.text = parsed.text;
     }
     if (body.completed !== undefined) patch.completed = !!body.completed;
     const updated = store.updateTodo(req.userId, req.params.id, patch);
