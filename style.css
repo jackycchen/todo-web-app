@@ -415,7 +415,27 @@ body {
   transform: translateX(10px) scale(0.98);
 }
 
+/* 优先级选择器:DOM 中位于删除按钮之后,用 order 在视觉上排到它前面 */
+.todo-priority {
+  order: 1;
+  flex-shrink: 0;
+  padding: 4px 6px;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg-accent);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.todo-priority:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
 .todo-delete-btn {
+  order: 2;
   flex-shrink: 0;
   margin-left: auto;
   padding: 4px 10px;

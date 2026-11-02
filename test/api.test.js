@@ -406,6 +406,74 @@ test("since 参数非法时返回 400", async () => {
   }
 });
 
+/* ---------- 优先级 ---------- */
+
+test("全量列表按优先级排序:高在前,同级按创建时间升序", async () => {
+  const token = await ensureUser("priority_order", "secret123");
+
+  const normal1 = (await createTodo(token, "普通一")).data;
+  await new Promise((r) => setTimeout(r, 2));
+  const normal2 = (await createTodo(token, "普通二")).data;
+  await new Promise((r) => setTimeout(r, 2));
+  const high = (await createTodo(token, "高优先级")).data;
+  await new Promise((r) => setTimeout(r, 2));
+  const low = (await createTodo(token, "低优先级")).data;
+
+  assert.equal(normal1.priority, 1, "新待办默认「普通」");
+  assert.equal(high.priority, 1);
+
+  const highRes = await patch(`/api/todos/${high.id}`, { priority: 2 }, token);
+  assert.equal(highRes.status, 200);
+  const lowRes = await patch(`/api/todos/${low.id}`, { priority: 0 }, token);
+  assert.equal(lowRes.status, 200);
+
+  const list = await (await get("/api/todos", token)).json();
+  assert.deepEqual(
+    list.map((t) => t.text),
+    ["高优先级", "普通一", "普通二", "低优先级"],
+    "先按优先级降序,同级按 createdAt 升序"
+  );
+  assert.deepEqual(list.map((t) => t.priority), [2, 1, 1, 0]);
+  assert.ok(normal1.createdAt <= normal2.createdAt);
+});
+
+test("修改优先级会刷新 updatedAt,并能通过 since 增量拉到", async () => {
+  const token = await ensureUser("priority_since", "secret123");
+  const item = (await createTodo(token, "优先级同步")).data;
+  assert.equal(item.priority, 1);
+
+  const patchedRes = await patch(`/api/todos/${item.id}`, { priority: 2 }, token);
+  assert.equal(patchedRes.status, 200);
+  const patched = await patchedRes.json();
+  assert.equal(patched.priority, 2);
+  assert.ok(patched.updatedAt > item.updatedAt, "修改优先级必须刷新 updatedAt");
+
+  const changes = await (
+    await get(`/api/todos?since=${item.updatedAt}`, token)
+  ).json();
+  const found = changes.find((t) => t.id === item.id);
+  assert.ok(found, "修改优先级后应出现在增量结果中");
+  assert.equal(found.priority, 2);
+  assert.equal(found.updatedAt, patched.updatedAt);
+});
+
+test("非法 priority 返回 400 且不改变数据", async () => {
+  const token = await ensureUser("priority_invalid", "secret123");
+  const item = (await createTodo(token, "优先级校验")).data;
+
+  for (const bad of [-1, 3, 1.5, "2", null, true]) {
+    const res = await patch(`/api/todos/${item.id}`, { priority: bad }, token);
+    assert.equal(res.status, 400, `priority=${JSON.stringify(bad)} 应被拒绝`);
+  }
+
+  const createBad = await post("/api/todos", { text: "非法优先级", priority: 9 }, token);
+  assert.equal(createBad.status, 400);
+
+  const list = await (await get("/api/todos", token)).json();
+  assert.equal(list.find((t) => t.id === item.id).priority, 1, "非法请求不应改变原值");
+  assert.ok(!list.some((t) => t.text === "非法优先级"));
+});
+
 test("删除写入 tombstone:增量接口可感知,全量列表不返回", async () => {
   const token = await ensureUser("sync_delete", "secret123");
   const item = (await createTodo(token, "待删除同步")).data;
