@@ -295,6 +295,21 @@ body {
   transition: color 0.35s ease;
 }
 
+/* 双击进入编辑时的行内输入框 */
+.todo-edit-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  font-family: inherit;
+  font-size: 15px;
+  color: var(--text);
+  background: var(--card-bg);
+  border: 1px solid var(--primary);
+  border-radius: 8px;
+  box-shadow: 0 0 0 3px var(--focus-ring);
+  outline: none;
+}
+
 /* 已完成:整条淡化,文字划线从左到右绘制 */
 .todo-item.is-completed {
   opacity: 0.55;

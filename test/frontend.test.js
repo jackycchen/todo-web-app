@@ -36,6 +36,11 @@ function createElement(tag) {
       el.children.push(child);
       return child;
     },
+    replaceChild(newChild, oldChild) {
+      const i = el.children.indexOf(oldChild);
+      if (i >= 0) el.children[i] = newChild;
+      return oldChild;
+    },
     setAttribute(name, val) {
       if (name === "class") el.className = val;
       else el._attrs[name] = val;
@@ -60,6 +65,10 @@ function createElement(tag) {
       }
       if (sel === ".todo-checkbox") {
         return el.children.find((c) => c.classList.contains("todo-checkbox")) || null;
+      }
+      const clsMatch = /^\.([\w-]+)$/.exec(sel);
+      if (clsMatch) {
+        return el.children.find((c) => c.classList.contains(clsMatch[1])) || null;
       }
       return null;
     },
@@ -243,6 +252,38 @@ function renderedItems() {
   }));
 }
 
+// ---------- 行内编辑辅助 ----------
+function dblclickText(index) {
+  const list = getElement("todo-list");
+  const li = list.children[index];
+  const text = li.children[1];
+  text.closest = () => li;
+  list.handlers.dblclick[0]({ target: text });
+}
+
+function editorAt(index) {
+  return getElement("todo-list").children[index].children[1];
+}
+
+function pressEnter(editor) {
+  editor.handlers.keydown[0]({ key: "Enter", preventDefault() {} });
+}
+
+function pressEscape(editor) {
+  editor.handlers.keydown[0]({ key: "Escape", preventDefault() {} });
+}
+
+function blurEditor(editor) {
+  editor.handlers.blur[0]({});
+}
+
+async function serverTodos() {
+  const token = window.localStorage.getItem("todo-app.token");
+  return (await fetch(`${base}/api/todos`, {
+    headers: { Authorization: "Bearer " + token },
+  })).json();
+}
+
 test("前端端到端:注册/增删改/登出/重新登录/用户隔离", async () => {
   // 初始未登录:显示登录视图
   assert.equal(getElement("auth-view").hidden, false);
@@ -411,4 +452,68 @@ test("多端同步:另一会话修改后,本端轮询自动同步并提示", asy
   assert.equal(getElement("stats-completed").textContent, "1");
   assert.equal(getElement("sync-notice").hidden, false);
   assert.equal(getElement("sync-notice").textContent, "已在其他设备更新");
+});
+
+test("双击待办进入编辑,回车保存并同步服务端", async () => {
+  // 前序场景结束:erin 已登录,列表中有 1 条已完成待办
+  assert.equal(getElement("app-view").hidden, false);
+  let items = renderedItems();
+  assert.equal(items.length, 1);
+
+  // 双击文本:span 被替换为编辑框,内容为当前文本
+  dblclickText(0);
+  const editor = editorAt(0);
+  assert.ok(editor.classList.contains("todo-edit-input"), "应渲染编辑输入框");
+  assert.equal(editor.value, "多端同步任务");
+
+  // 回车保存(前后空白应被去除)
+  editor.value = "  修改后的任务  ";
+  pressEnter(editor);
+  await flush();
+
+  items = renderedItems();
+  assert.equal(items.length, 1);
+  assert.equal(items[0].text, "修改后的任务");
+  assert.equal(items[0].completed, true, "编辑文本不应改变完成状态");
+
+  const list = await serverTodos();
+  assert.equal(list.length, 1);
+  assert.equal(list[0].text, "修改后的任务", "服务端应收到 PATCH 后的文本");
+  assert.equal(list[0].completed, true);
+});
+
+test("编辑支持 Esc 取消与空白文本回退,失焦保存", async () => {
+  // Esc 取消:丢弃输入,恢复原文,且不写入服务端
+  dblclickText(0);
+  let editor = editorAt(0);
+  editor.value = "不应保存的内容";
+  pressEscape(editor);
+  await flush();
+
+  let items = renderedItems();
+  assert.equal(items[0].text, "修改后的任务", "Esc 后应恢复原文");
+  let list = await serverTodos();
+  assert.equal(list[0].text, "修改后的任务", "取消编辑不应写入服务端");
+
+  // 纯空白文本视为取消,保留原文
+  dblclickText(0);
+  editor = editorAt(0);
+  editor.value = "   ";
+  pressEnter(editor);
+  await flush();
+
+  items = renderedItems();
+  assert.equal(items[0].text, "修改后的任务", "空白文本应回退到原文");
+
+  // 失焦保存
+  dblclickText(0);
+  editor = editorAt(0);
+  editor.value = "失焦保存的任务";
+  blurEditor(editor);
+  await flush();
+
+  items = renderedItems();
+  assert.equal(items[0].text, "失焦保存的任务");
+  list = await serverTodos();
+  assert.equal(list[0].text, "失焦保存的任务", "失焦时应提交编辑");
 });

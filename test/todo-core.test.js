@@ -132,6 +132,57 @@ test("toggleTodo id 不存在时返回原数组", () => {
   assert.strictEqual(core.toggleTodo(todos, "no-such-id"), todos);
 });
 
+/* ---------- updateTodo ---------- */
+
+test("updateTodo 修改指定待办的文本,保留其他项与完成状态", () => {
+  const todos = makeTodos([
+    { id: "a", text: "写代码", completed: true },
+    { id: "b", text: "写测试", completed: false }
+  ]);
+
+  const next = core.updateTodo(todos, "a", "写更好的代码");
+
+  assert.equal(next[0].text, "写更好的代码");
+  assert.equal(next[0].completed, true, "完成状态应保留");
+  assert.equal(next[1].text, "写测试");
+  assert.equal(next.length, 2);
+});
+
+test("updateTodo 去除首尾空白", () => {
+  const todos = makeTodos([{ id: "a", text: "旧文本" }]);
+  const next = core.updateTodo(todos, "a", "  新文本  ");
+  assert.equal(next[0].text, "新文本");
+});
+
+test("updateTodo 返回新数组,不修改原数组", () => {
+  const todos = makeTodos([{ id: "a", text: "旧文本" }]);
+  const snapshot = JSON.stringify(todos);
+
+  const next = core.updateTodo(todos, "a", "新文本");
+
+  assert.notStrictEqual(next, todos);
+  assert.notStrictEqual(next[0], todos[0]);
+  assert.equal(JSON.stringify(todos), snapshot, "入参不应被修改");
+});
+
+test("updateTodo 空文本或纯空白文本时原样返回", () => {
+  const todos = makeTodos([{ id: "a", text: "旧文本" }]);
+  assert.strictEqual(core.updateTodo(todos, "a", ""), todos);
+  assert.strictEqual(core.updateTodo(todos, "a", "   "), todos);
+  assert.strictEqual(core.updateTodo(todos, "a", null), todos);
+});
+
+test("updateTodo id 不存在时原样返回", () => {
+  const todos = makeTodos([{ id: "a", text: "旧文本" }]);
+  assert.strictEqual(core.updateTodo(todos, "no-such-id", "新文本"), todos);
+});
+
+test("updateTodo 文本未变化时原样返回(引用相同)", () => {
+  const todos = makeTodos([{ id: "a", text: "旧文本" }]);
+  assert.strictEqual(core.updateTodo(todos, "a", "旧文本"), todos);
+  assert.strictEqual(core.updateTodo(todos, "a", "  旧文本  "), todos, "去空白后相同也应视为无变化");
+});
+
 /* ---------- removeTodo ---------- */
 
 test("removeTodo 删除指定 id 的待办", () => {

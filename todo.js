@@ -40,6 +40,12 @@
   var saveQueue = Promise.resolve();
   var noticeTimer = null;
 
+  /** 当前正在编辑的待办 id;null 表示没有编辑中的条目(同一时间只编辑一条) */
+  var editingId = null;
+
+  /** 重建列表时抑制编辑框的 blur 回调,避免把"重绘移除输入框"误判为用户失焦 */
+  var suppressEditorBlur = false;
+
   /* ---------- DOM 引用 ---------- */
 
   var authView = document.getElementById("auth-view");
@@ -397,10 +403,99 @@
     return core.getVisibleTodos(todos, currentFilter);
   }
 
+  function createTextSpan(todo) {
+    var text = document.createElement("span");
+    text.className = "todo-text";
+    text.textContent = todo.text;
+    text.setAttribute("title", "双击编辑");
+    return text;
+  }
+
+  /**
+   * 创建行内编辑输入框。
+   * - 回车保存,失焦保存,Esc 取消
+   * - pending 用于整表重绘时保留用户已输入但尚未提交的内容与光标位置
+   */
+  function createEditor(todo, pending) {
+    var editor = document.createElement("input");
+    editor.type = "text";
+    editor.className = "todo-edit-input";
+    editor.maxLength = 200;
+    editor.value = pending ? pending.value : todo.text;
+    editor.setAttribute("aria-label", "编辑待办内容");
+    editor.setAttribute("title", "回车保存,Esc 取消");
+
+    editor.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        commitEdit(todo.id, editor.value);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        cancelEdit();
+      }
+    });
+
+    editor.addEventListener("blur", function () {
+      if (suppressEditorBlur) return;
+      // 只处理仍挂在列表中的当前编辑框;已被替换/重绘的旧实例忽略
+      if (findEditorElement(todo.id) !== editor) return;
+      commitEdit(todo.id, editor.value);
+    });
+
+    return editor;
+  }
+
+  /** 按 id 找到列表项元素(避免 id 拼接进选择器) */
+  function findItemElement(id) {
+    for (var i = 0; i < list.children.length; i++) {
+      var li = list.children[i];
+      if (li.dataset && li.dataset.id === id) return li;
+    }
+    return null;
+  }
+
+  function findEditorElement(id) {
+    var li = findItemElement(id);
+    return li ? li.querySelector(".todo-edit-input") : null;
+  }
+
+  /** 把编辑框换回普通文本(保存或取消后调用),避免整表重绘打断后续点击 */
+  function replaceEditorWithText(id) {
+    var li = findItemElement(id);
+    if (!li) return;
+    var editor = li.querySelector(".todo-edit-input");
+    if (!editor) return;
+    var idx = findTodoIndex(id);
+    if (idx < 0) return;
+
+    li.replaceChild(createTextSpan(todos[idx]), editor);
+
+    var del = li.querySelector(".todo-delete-btn");
+    if (del) del.setAttribute("aria-label", "删除:「" + todos[idx].text + "」");
+  }
+
   function render() {
     var visible = getVisibleTodos();
 
+    // 重绘前取出编辑中的内容,轮询同步等重绘不应丢失用户正在输入的文字
+    var pending = null;
+    if (editingId !== null) {
+      var activeEditor = list.querySelector(".todo-edit-input");
+      if (activeEditor) {
+        pending = {
+          value: activeEditor.value,
+          start: typeof activeEditor.selectionStart === "number" ? activeEditor.selectionStart : null,
+          end: typeof activeEditor.selectionEnd === "number" ? activeEditor.selectionEnd : null
+        };
+      }
+    }
+
+    suppressEditorBlur = true;
     list.innerHTML = "";
+    suppressEditorBlur = false;
+
+    var editingVisible = false;
+
     visible.forEach(function (todo) {
       var li = document.createElement("li");
       li.className = "todo-item" + (todo.completed ? " is-completed" : "");
@@ -412,9 +507,13 @@
       checkbox.checked = todo.completed;
       checkbox.setAttribute("aria-label", todo.completed ? "标记为未完成" : "标记为已完成");
 
-      var text = document.createElement("span");
-      text.className = "todo-text";
-      text.textContent = todo.text;
+      li.appendChild(checkbox);
+      if (editingId === todo.id) {
+        li.appendChild(createEditor(todo, pending));
+        editingVisible = true;
+      } else {
+        li.appendChild(createTextSpan(todo));
+      }
 
       var del = document.createElement("button");
       del.type = "button";
@@ -422,11 +521,32 @@
       del.textContent = "删除";
       del.setAttribute("aria-label", "删除:「" + todo.text + "」");
 
-      li.appendChild(checkbox);
-      li.appendChild(text);
       li.appendChild(del);
       list.appendChild(li);
     });
+
+    if (editingId !== null) {
+      if (!editingVisible) {
+        // 正在编辑的条目已不在当前视图(被删除或被筛选掉),结束编辑态
+        editingId = null;
+      } else {
+        var editor = list.querySelector(".todo-edit-input");
+        if (editor) {
+          editor.focus();
+          if (
+            pending &&
+            pending.start !== null &&
+            typeof editor.setSelectionRange === "function"
+          ) {
+            try {
+              editor.setSelectionRange(pending.start, pending.end);
+            } catch (err) {
+              // 某些输入类型不支持选区,忽略即可
+            }
+          }
+        }
+      }
+    }
 
     renderSummary();
     renderClearCompletedButton();
@@ -527,6 +647,57 @@
     render();
   }
 
+  /** 进入行内编辑:把文本 span 替换为输入框并聚焦 */
+  function startEdit(id) {
+    if (editingId !== null) return;
+    var idx = findTodoIndex(id);
+    if (idx < 0) return;
+
+    var li = findItemElement(id);
+    if (!li) return;
+    var text = li.querySelector(".todo-text");
+    if (!text) return;
+
+    editingId = id;
+    var editor = createEditor(todos[idx], null);
+    li.replaceChild(editor, text);
+    editor.focus();
+    if (typeof editor.select === "function") editor.select();
+  }
+
+  /** 提交编辑:文本为空或未改动时放弃,否则写回待办列表并同步服务端 */
+  function commitEdit(id, value) {
+    if (editingId !== id) return;
+
+    var idx = findTodoIndex(id);
+    if (idx < 0) {
+      editingId = null;
+      replaceEditorWithText(id);
+      return;
+    }
+
+    var normalized = String(value == null ? "" : value).trim();
+
+    // 空文本(或仅空白)视为取消,保留原文,避免把待办改成空条目
+    if (!normalized || normalized === todos[idx].text) {
+      cancelEdit();
+      return;
+    }
+
+    editingId = null;
+    todos = core.updateTodo(todos, id, normalized);
+    saveTodos();
+    replaceEditorWithText(id);
+  }
+
+  /** 取消编辑:丢弃输入内容,恢复原文 */
+  function cancelEdit() {
+    var id = editingId;
+    if (id === null) return;
+    editingId = null;
+    replaceEditorWithText(id);
+  }
+
   function setFilter(filter) {
     currentFilter = filter;
     filterButtons.forEach(function (btn) {
@@ -547,6 +718,14 @@
     addTodo(text);
     input.value = "";
     input.focus();
+  });
+
+  list.addEventListener("dblclick", function (e) {
+    var target = e.target;
+    if (!target || !target.classList || !target.classList.contains("todo-text")) return;
+    var li = target.closest(".todo-item");
+    if (!li || !li.dataset) return;
+    startEdit(li.dataset.id);
   });
 
   list.addEventListener("click", function (e) {
