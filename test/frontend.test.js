@@ -412,3 +412,84 @@ test("多端同步:另一会话修改后,本端轮询自动同步并提示", asy
   assert.equal(getElement("sync-notice").hidden, false);
   assert.equal(getElement("sync-notice").textContent, "已在其他设备更新");
 });
+
+test("空状态:无待办时展示插画、引导文案与添加入口", async () => {
+  // 注册新用户 frank,待办为空
+  clickTab(1);
+  fillInput("register-username", "frank");
+  fillInput("register-password", "secret123");
+  submitForm("register-form");
+  await flush();
+
+  const list = getElement("todo-list");
+  assert.equal(list.children.length, 0);
+  assert.equal(getElement("empty-state").hidden, false);
+  assert.equal(getElement("empty-state-title").textContent, "还没有待办事项");
+  assert.match(getElement("empty-state-text").textContent, /添加你的第一条待办/);
+  assert.equal(getElement("empty-state-action").hidden, false);
+  assert.equal(getElement("list-pagination").hidden, true);
+
+  // 「添加第一个待办」不会抛错(真实浏览器中聚焦输入框)
+  getElement("empty-state-action").handlers.click[0]();
+
+  // 添加一条后空状态消失
+  fillInput("todo-input", "第一条待办");
+  submitForm("todo-form");
+  await flush();
+  assert.equal(getElement("todo-list").children.length, 1);
+  assert.equal(getElement("empty-state").hidden, true);
+});
+
+test("长列表:默认只渲染一页,加载更多后补齐且切换筛选重置分页", async () => {
+  // 前一个用例结束时 frank 已登录,直接通过 API 批量造 25 条数据
+  const token = window.localStorage.getItem("todo-app.token");
+  assert.ok(token, "应处于登录态");
+
+  const posts = [];
+  for (let i = 0; i < 25; i++) {
+    posts.push(fetch(`${base}/api/todos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+      body: JSON.stringify({ text: `批量任务 ${i}` }),
+    }));
+  }
+  const results = await Promise.all(posts);
+  results.forEach((res) => assert.equal(res.status, 201));
+
+  // 轮询会在 150ms 间隔内把远端新增合并进来,等它渲染完成
+  await new Promise((r) => setTimeout(r, 800));
+
+  const list = getElement("todo-list");
+  assert.equal(list.children.length, 20, "默认只渲染第一页(20 条)");
+  assert.equal(getElement("stats-total").textContent, "26", "统计仍覆盖全部待办(含先前 1 条)");
+  assert.equal(getElement("empty-state").hidden, true);
+
+  const pagination = getElement("list-pagination");
+  assert.equal(pagination.hidden, false);
+  assert.match(getElement("list-status").textContent, /20 \/ 26/);
+  assert.equal(getElement("load-more-btn").hidden, false);
+
+  // 点击加载更多 -> 全部 26 条渲染,按钮隐藏,状态提示已全部加载
+  getElement("load-more-btn").handlers.click[0]();
+  assert.equal(getElement("todo-list").children.length, 26);
+  assert.match(getElement("list-status").textContent, /已全部加载,共 26 项/);
+  assert.equal(pagination.hidden, false);
+  assert.equal(getElement("load-more-btn").hidden, true);
+
+  // 切换筛选会把加载深度重置回第一页
+  filterBtns[1].handlers.click[0](); // 未完成
+  assert.equal(getElement("todo-list").children.length, 20);
+  assert.match(getElement("list-status").textContent, /20 \/ 26/);
+
+  // 已完成筛选无匹配:展示筛选语境空状态,但不显示"添加"引导
+  filterBtns[2].handlers.click[0]();
+  assert.equal(getElement("todo-list").children.length, 0);
+  assert.equal(getElement("empty-state").hidden, false);
+  assert.equal(getElement("empty-state-title").textContent, "还没有已完成的事项");
+  assert.equal(getElement("empty-state-action").hidden, true);
+  assert.equal(getElement("list-pagination").hidden, true);
+
+  filterBtns[0].handlers.click[0](); // 全部
+  assert.equal(getElement("todo-list").children.length, 20);
+  assert.equal(getElement("empty-state").hidden, true);
+});
