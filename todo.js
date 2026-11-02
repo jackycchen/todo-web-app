@@ -51,7 +51,7 @@
   /** 同步提示("已在其他设备更新")的展示时长 */
   var NOTICE_MS = 4000;
 
-  /** 待办数组,每项形如 { id, text, completed, createdAt, updatedAt } */
+  /** 待办数组,每项形如 { id, text, completed, priority, createdAt, updatedAt } */
   var todos = [];
 
   /** 上次成功同步到服务端的快照,用于计算增量 */
@@ -150,6 +150,7 @@
       id: t.id,
       text: t.text,
       completed: t.completed,
+      priority: core.normalizePriority(t.priority),
       createdAt: t.createdAt,
       updatedAt: t.updatedAt
     };
@@ -182,7 +183,11 @@
   function hasUnsyncedChanges(item) {
     for (var i = 0; i < lastSynced.length; i++) {
       if (lastSynced[i].id === item.id) {
-        return lastSynced[i].text !== item.text || lastSynced[i].completed !== item.completed;
+        return (
+          lastSynced[i].text !== item.text ||
+          lastSynced[i].completed !== item.completed ||
+          core.normalizePriority(lastSynced[i].priority) !== core.normalizePriority(item.priority)
+        );
       }
     }
     return true;
@@ -246,14 +251,21 @@
     var ops = [];
     todos.forEach(function (t) {
       var prev = prevById[t.id];
+      var priorityChanged =
+        !!prev &&
+        core.normalizePriority(prev.priority) !== core.normalizePriority(t.priority);
       if (!prev) {
         ops.push({ type: "create", id: t.id, sent: cloneItem(t), promise: api.createTodo(t) });
-      } else if (prev.text !== t.text || prev.completed !== t.completed) {
+      } else if (prev.text !== t.text || prev.completed !== t.completed || priorityChanged) {
         ops.push({
           type: "update",
           id: t.id,
           sent: cloneItem(t),
-          promise: api.updateTodo(t.id, { text: t.text, completed: t.completed })
+          promise: api.updateTodo(t.id, {
+            text: t.text,
+            completed: t.completed,
+            priority: core.normalizePriority(t.priority)
+          })
         });
       }
     });
@@ -280,6 +292,7 @@
                 id: res.id,
                 text: res.text,
                 completed: !!res.completed,
+                priority: core.normalizePriority(res.priority),
                 createdAt: res.createdAt,
                 updatedAt: res.updatedAt
               }
@@ -295,6 +308,7 @@
           }
           todos[idx].updatedAt = serverItem.updatedAt;
           todos[idx].createdAt = serverItem.createdAt;
+          todos[idx].priority = serverItem.priority;
         }
         // 快照记录"服务端已确认的版本",这样请求期间的新本地改动下次仍会被提交
         setLastSyncedItem(serverItem);
@@ -390,6 +404,7 @@
         id: remote.id,
         text: typeof remote.text === "string" ? remote.text : "",
         completed: !!remote.completed,
+        priority: core.normalizePriority(remote.priority),
         createdAt: remote.createdAt,
         updatedAt: remoteUpdatedAt
       };
@@ -406,7 +421,11 @@
         // 本地改动尚未提交:保留本地版本,稍后提交(本地视角下为更新的写入)
         needPush = true;
       } else if (remoteUpdatedAt > localUpdatedAt) {
-        if (local.text !== remoteItem.text || local.completed !== remoteItem.completed) {
+        if (
+          local.text !== remoteItem.text ||
+          local.completed !== remoteItem.completed ||
+          core.normalizePriority(local.priority) !== remoteItem.priority
+        ) {
           conflict = true;
         }
         todos[idx] = remoteItem;
@@ -420,6 +439,8 @@
     });
 
     if (changed) {
+      // 远端可能改变了优先级;保持与服务端一致的排序后再渲染
+      todos = core.sortTodos(todos);
       // 仅当用户主动加载过不止一页时,才跟随远端新增继续展开;
       // 否则保持一页上限,避免一次同步把大量条目全部塞进 DOM。
       if (wasShowingAll && visibleLimit > PAGE_SIZE) {
@@ -498,9 +519,30 @@
     del.textContent = "删除";
     del.setAttribute("aria-label", "删除:「" + todo.text + "」");
 
+    // 优先级入口:高 / 普通 / 低。DOM 顺序放在删除按钮之后,
+    // 通过 CSS order 在视觉上排到删除按钮之前(见 style.css)。
+    var priority = document.createElement("select");
+    priority.className = "todo-priority";
+    priority.setAttribute("aria-label", "优先级:「" + todo.text + "」");
+    priority.title = "设置优先级";
+    var currentPriority = core.normalizePriority(todo.priority);
+    [
+      core.PRIORITIES.HIGH,
+      core.PRIORITIES.NORMAL,
+      core.PRIORITIES.LOW
+    ].forEach(function (value) {
+      var option = document.createElement("option");
+      option.value = String(value);
+      option.textContent = core.PRIORITY_LABELS[value];
+      if (value === currentPriority) option.selected = true;
+      priority.appendChild(option);
+    });
+    priority.value = String(currentPriority);
+
     li.appendChild(checkbox);
     li.appendChild(text);
     li.appendChild(del);
+    li.appendChild(priority);
     return li;
   }
 
@@ -684,8 +726,19 @@
       input.focus();
       return;
     }
-    todos = next;
-    ensureTodoVisible(todos[todos.length - 1].id);
+    var added = next[next.length - 1];
+    // 新增项默认「普通」,排序后它不一定在末尾,先记下 id 再排
+    todos = core.sortTodos(next);
+    ensureTodoVisible(added.id);
+    saveTodos();
+    render();
+  }
+
+  /** 修改优先级:本地立即按服务端同一规则重排,再提交(提交会刷新 updatedAt) */
+  function changePriority(id, priority) {
+    var next = core.setPriority(todos, id, priority);
+    if (next === todos) return; // id 不存在或优先级未变化
+    todos = core.sortTodos(next);
     saveTodos();
     render();
   }
@@ -932,6 +985,15 @@
     } else if (e.target.classList.contains("todo-checkbox")) {
       toggleTodo(id);
     }
+  });
+
+  // 优先级下拉框变更(事件委托):立即重排并持久化
+  list.addEventListener("change", function (e) {
+    var target = e.target;
+    if (!target || !target.classList || !target.classList.contains("todo-priority")) return;
+    var li = target.closest(".todo-item");
+    if (!li) return;
+    changePriority(li.dataset.id, Number(target.value));
   });
 
   // 双击文本进入编辑态(复选框/删除按钮等不受影响)

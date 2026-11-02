@@ -49,6 +49,23 @@ function parseTodoText(value) {
 }
 
 /**
+ * 校验优先级:只接受 0(低)/1(普通)/2(高)的整数。
+ * 不接受字符串或 null,避免 "2" 与 2 混用导致排序/同步语义不一致。
+ */
+function parsePriority(value) {
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    (value !== core.PRIORITIES.LOW &&
+      value !== core.PRIORITIES.NORMAL &&
+      value !== core.PRIORITIES.HIGH)
+  ) {
+    return { error: "priority 必须是 0(低)、1(普通)或 2(高)" };
+  }
+  return { priority: value };
+}
+
+/**
  * 允许匿名访问的静态资源(白名单)。
  * 只列出前端页面直接引用的文件;未列出的路径一律 404,不会落到磁盘读取,
  * 因此 server.js、lib/**、test/**、package.json、data/** 等不会被暴露。
@@ -216,12 +233,22 @@ function createApp(options = {}) {
     if (parsed.error) {
       return res.status(400).json({ error: parsed.error });
     }
+    // 未提供 priority 时按「普通」创建(与旧数据迁移默认值一致)。
+    let priority = core.DEFAULT_PRIORITY;
+    if (body.priority !== undefined) {
+      const parsedPriority = parsePriority(body.priority);
+      if (parsedPriority.error) {
+        return res.status(400).json({ error: parsedPriority.error });
+      }
+      priority = parsedPriority.priority;
+    }
     // id 与 createdAt 完全由服务端生成:客户端传入的同名字段一律忽略,
     // 避免伪造 id 覆盖已有数据或伪造创建时间。
     const item = {
       id: crypto.randomUUID(),
       text: parsed.text,
       completed: !!body.completed,
+      priority,
       createdAt: now()
     };
     res.status(201).json(store.insertTodo(req.userId, item));
@@ -236,6 +263,13 @@ function createApp(options = {}) {
       patch.text = parsed.text;
     }
     if (body.completed !== undefined) patch.completed = !!body.completed;
+    if (body.priority !== undefined) {
+      const parsedPriority = parsePriority(body.priority);
+      if (parsedPriority.error) {
+        return res.status(400).json({ error: parsedPriority.error });
+      }
+      patch.priority = parsedPriority.priority;
+    }
     const updated = store.updateTodo(req.userId, req.params.id, patch);
     if (!updated) return res.status(404).json({ error: "待办不存在" });
     res.json(updated);
