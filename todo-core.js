@@ -19,6 +19,9 @@
   /** 筛选状态 */
   var FILTERS = { ALL: "all", ACTIVE: "active", COMPLETED: "completed" };
 
+  /** 长列表分页:每页默认条数 */
+  var DEFAULT_PAGE_SIZE = 20;
+
   /**
    * 生成新待办的 id。
    * 时间戳基数 + 随机后缀,保证同毫秒内多次创建也不冲突。
@@ -66,6 +69,31 @@
     return found ? next : todos;
   }
 
+  /**
+   * 修改指定 id 的待办文本,返回新数组(不修改入参)。
+   * 文本去除首尾空白后为空,或 id 不存在时,原样返回(同一引用)。
+   */
+  function editTodo(todos, id, text) {
+    var normalized = text == null ? "" : String(text).trim();
+    if (!normalized) return todos;
+
+    var found = false;
+    var next = todos.map(function (t) {
+      if (t.id === id) {
+        found = true;
+        return {
+          id: t.id,
+          text: normalized,
+          completed: t.completed,
+          createdAt: t.createdAt,
+          updatedAt: t.updatedAt
+        };
+      }
+      return t;
+    });
+    return found ? next : todos;
+  }
+
   /** 删除指定 id 的待办,返回新数组;id 不存在时原样返回 */
   function removeTodo(todos, id) {
     var next = todos.filter(function (t) { return t.id !== id; });
@@ -73,11 +101,31 @@
   }
 
   /**
+   * 统计待办数量,供「还剩 N 项未完成」等实时计数使用。
+   * 非数组入参按空列表处理;返回新对象,不修改入参。
+   */
+  function getStats(todos) {
+    var list = Array.isArray(todos) ? todos : [];
+    var completed = list.filter(function (t) {
+      return !!t && t.completed;
+    }).length;
+    return {
+      total: list.length,
+      completed: completed,
+      remaining: list.length - completed
+    };
+  }
+
+  /**
    * 移除所有已完成项,返回新数组(不修改入参)。
-   * 没有任何已完成项时原样返回入参,便于调用方用引用相等判断"无需写入"。
+   * 非数组入参按空列表处理;没有任何已完成项时原样返回入参,
+   * 便于调用方用引用相等判断"无需写入"。
    */
   function clearCompleted(todos) {
-    var next = todos.filter(function (t) { return !t.completed; });
+    if (!Array.isArray(todos)) return [];
+    var next = todos.filter(function (t) {
+      return !(t && t.completed);
+    });
     return next.length === todos.length ? todos : next;
   }
 
@@ -118,15 +166,61 @@
     return "暂无符合条件的待办";
   }
 
+  /**
+   * 归一化每页条数。
+   * 非数字、NaN、小于 1 时回落到 DEFAULT_PAGE_SIZE,避免调用方误传导致一次渲染全部条目。
+   */
+  function normalizePageSize(limit) {
+    var n = Number(limit);
+    if (!Number.isFinite(n) || n < 1) return DEFAULT_PAGE_SIZE;
+    return Math.max(1, Math.floor(n));
+  }
+
+  /**
+   * 取可见列表的前 limit 项(返回新数组,不修改入参)。
+   * 列表不超过一页时返回完整副本。
+   */
+  function getVisiblePage(items, limit) {
+    var list = Array.isArray(items) ? items : [];
+    var size = normalizePageSize(limit);
+    return list.length > size ? list.slice(0, size) : list.slice();
+  }
+
+  /**
+   * 计算分页状态。
+   * @param {number} total 当前筛选下的可见总数
+   * @param {number} limit 已加载条数上限
+   * @returns {{total:number, shown:number, remaining:number, hasMore:boolean, pageSize:number}}
+   */
+  function getPaginationState(total, limit) {
+    var count = Number(total);
+    if (!Number.isFinite(count) || count < 0) count = 0;
+    count = Math.floor(count);
+    var size = normalizePageSize(limit);
+    var shown = Math.min(count, size);
+    return {
+      total: count,
+      shown: shown,
+      remaining: count - shown,
+      hasMore: shown < count,
+      pageSize: size
+    };
+  }
+
   return {
     FILTERS: FILTERS,
+    DEFAULT_PAGE_SIZE: DEFAULT_PAGE_SIZE,
     generateId: generateId,
     createTodo: createTodo,
     addTodo: addTodo,
     toggleTodo: toggleTodo,
+    editTodo: editTodo,
     removeTodo: removeTodo,
+    getStats: getStats,
     clearCompleted: clearCompleted,
     getVisibleTodos: getVisibleTodos,
+    getVisiblePage: getVisiblePage,
+    getPaginationState: getPaginationState,
     sanitizeItems: sanitizeItems,
     getEmptyStateText: getEmptyStateText
   };

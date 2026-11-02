@@ -198,6 +198,69 @@ test("空白内容创建返回 400", async () => {
   assert.equal(res.status, 400);
 });
 
+test("待办内容超过 200 字符返回 400", async () => {
+  const { data } = await login("alice", "secret123");
+  const res = await post("/api/todos", { text: "a".repeat(201) }, data.token);
+  assert.equal(res.status, 400);
+});
+
+test("待办内容恰好 200 字符可以创建(忽略首尾空白)", async () => {
+  const { data } = await login("alice", "secret123");
+  const res = await post("/api/todos", { text: "  " + "a".repeat(200) + "  " }, data.token);
+  assert.equal(res.status, 201);
+  assert.equal((await res.json()).text.length, 200);
+});
+
+test("修改待办内容超过 200 字符返回 400 且不生效", async () => {
+  const { data } = await login("alice", "secret123");
+  const created = await createTodo(data.token, "长度校验目标");
+
+  const res = await patch(
+    "/api/todos/" + created.data.id,
+    { text: "b".repeat(201) },
+    data.token
+  );
+  assert.equal(res.status, 400);
+
+  const list = await (await get("/api/todos", data.token)).json();
+  assert.equal(list.find((t) => t.id === created.data.id).text, "长度校验目标");
+});
+
+test("客户端传入的 id 与 createdAt 会被忽略", async () => {
+  const { data } = await login("alice", "secret123");
+  const forgedId = "forged-id";
+  const forgedCreatedAt = 1;
+
+  const res = await post(
+    "/api/todos",
+    { id: forgedId, createdAt: forgedCreatedAt, text: "服务端生成标识" },
+    data.token
+  );
+  assert.equal(res.status, 201);
+  const created = await res.json();
+  assert.notEqual(created.id, forgedId, "id 必须由服务端生成");
+  assert.ok(created.createdAt > forgedCreatedAt, "createdAt 必须是服务端时间");
+  assert.ok(Math.abs(created.createdAt - Date.now()) < 60000);
+});
+
+test("伪造已存在待办的 id 不会覆盖原数据", async () => {
+  const { data } = await login("alice", "secret123");
+  const original = (await createTodo(data.token, "原始内容")).data;
+
+  const res = await post(
+    "/api/todos",
+    { id: original.id, createdAt: original.createdAt, text: "被覆盖的内容" },
+    data.token
+  );
+  assert.equal(res.status, 201);
+  const created = await res.json();
+  assert.notEqual(created.id, original.id, "不得复用客户端提供的 id");
+
+  const list = await (await get("/api/todos", data.token)).json();
+  assert.equal(list.find((t) => t.id === original.id).text, "原始内容");
+  assert.ok(list.some((t) => t.id === created.id && t.text === "被覆盖的内容"));
+});
+
 test("切换完成状态并改名", async () => {
   const { data } = await login("alice", "secret123");
   const created = await createTodo(data.token, "待切换");

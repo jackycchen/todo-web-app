@@ -132,6 +132,57 @@ test("toggleTodo id 不存在时返回原数组", () => {
   assert.strictEqual(core.toggleTodo(todos, "no-such-id"), todos);
 });
 
+/* ---------- editTodo ---------- */
+
+test("editTodo 修改指定 id 的文本并返回新数组", () => {
+  const todos = makeTodos([
+    { id: "a", text: "旧文本", completed: false },
+    { id: "b", text: "另一条", completed: true }
+  ]);
+
+  const next = core.editTodo(todos, "a", "新文本");
+
+  assert.notStrictEqual(next, todos);
+  assert.equal(next[0].text, "新文本");
+  assert.equal(next[0].completed, false, "完成状态应保持不变");
+  assert.equal(next[1].text, "另一条", "其他项不应被修改");
+});
+
+test("editTodo 自动去除首尾空白", () => {
+  const todos = makeTodos([{ id: "a", text: "旧文本" }]);
+  const next = core.editTodo(todos, "a", "  新文本  ");
+
+  assert.equal(next[0].text, "新文本");
+});
+
+test("editTodo 空文本/纯空白不修改并返回原数组(同一引用)", () => {
+  const todos = makeTodos([{ id: "a", text: "旧文本" }]);
+
+  assert.strictEqual(core.editTodo(todos, "a", ""), todos);
+  assert.strictEqual(core.editTodo(todos, "a", "   "), todos);
+  assert.strictEqual(core.editTodo(todos, "a", null), todos);
+  assert.equal(todos[0].text, "旧文本");
+});
+
+test("editTodo id 不存在时返回原数组(同一引用)", () => {
+  const todos = makeTodos([{ id: "a", text: "旧文本" }]);
+
+  assert.strictEqual(core.editTodo(todos, "no-such-id", "新文本"), todos);
+});
+
+test("editTodo 不修改入参(原数组与目标项均不变)", () => {
+  const todos = makeTodos([
+    { id: "a", text: "旧文本", completed: false },
+    { id: "b", text: "另一条", completed: true }
+  ]);
+  const snapshot = JSON.stringify(todos);
+
+  const next = core.editTodo(todos, "a", "新文本");
+
+  assert.notStrictEqual(next[0], todos[0], "目标项应为新对象");
+  assert.equal(JSON.stringify(todos), snapshot, "入参不应被修改");
+});
+
 /* ---------- removeTodo ---------- */
 
 test("removeTodo 删除指定 id 的待办", () => {
@@ -168,6 +219,87 @@ test("removeTodo 删除最后一项后得到空数组", () => {
 test("removeTodo id 不存在时返回原数组", () => {
   const todos = makeTodos([{ id: "a", text: "写代码" }]);
   assert.strictEqual(core.removeTodo(todos, "no-such-id"), todos);
+});
+
+/* ---------- getStats(实时计数) ---------- */
+
+test("getStats 统计总数、已完成与未完成数量", () => {
+  const todos = makeTodos([
+    { id: "a", text: "写代码", completed: false },
+    { id: "b", text: "写测试", completed: true },
+    { id: "c", text: "写文档", completed: false }
+  ]);
+
+  assert.deepEqual(core.getStats(todos), { total: 3, completed: 1, remaining: 2 });
+});
+
+test("getStats 空数组与非数组入参返回零值", () => {
+  assert.deepEqual(core.getStats([]), { total: 0, completed: 0, remaining: 0 });
+  assert.deepEqual(core.getStats(null), { total: 0, completed: 0, remaining: 0 });
+  assert.deepEqual(core.getStats("oops"), { total: 0, completed: 0, remaining: 0 });
+});
+
+test("getStats 不修改入参", () => {
+  const todos = makeTodos([{ id: "a", text: "写代码", completed: true }]);
+  const snapshot = JSON.stringify(todos);
+
+  const stats = core.getStats(todos);
+
+  assert.notStrictEqual(stats, todos);
+  assert.equal(JSON.stringify(todos), snapshot);
+});
+
+/* ---------- clearCompleted(一键清除已完成) ---------- */
+
+test("clearCompleted 只删除已完成项,保留进行中的项", () => {
+  const todos = makeTodos([
+    { id: "a", text: "进行中 1", completed: false },
+    { id: "b", text: "已完成 1", completed: true },
+    { id: "c", text: "进行中 2", completed: false },
+    { id: "d", text: "已完成 2", completed: true }
+  ]);
+
+  const next = core.clearCompleted(todos);
+
+  assert.deepEqual(next.map((t) => t.id), ["a", "c"]);
+  assert.ok(next.every((t) => !t.completed));
+});
+
+test("clearCompleted 返回新数组,不修改入参", () => {
+  const todos = makeTodos([
+    { id: "a", text: "进行中", completed: false },
+    { id: "b", text: "已完成", completed: true }
+  ]);
+  const snapshot = JSON.stringify(todos);
+
+  const next = core.clearCompleted(todos);
+
+  assert.notStrictEqual(next, todos);
+  assert.equal(JSON.stringify(todos), snapshot);
+});
+
+test("clearCompleted 没有已完成项时返回原数组引用", () => {
+  const todos = makeTodos([
+    { id: "a", text: "进行中 1", completed: false },
+    { id: "b", text: "进行中 2", completed: false }
+  ]);
+
+  assert.strictEqual(core.clearCompleted(todos), todos);
+});
+
+test("clearCompleted 非数组入参返回空数组", () => {
+  assert.deepEqual(core.clearCompleted(null), []);
+  assert.deepEqual(core.clearCompleted(undefined), []);
+  assert.deepEqual(core.clearCompleted("oops"), []);
+});
+
+test("clearCompleted 全部为已完成时得到空数组", () => {
+  const todos = makeTodos([
+    { id: "a", text: "已完成 1", completed: true },
+    { id: "b", text: "已完成 2", completed: true }
+  ]);
+
+  assert.deepEqual(core.clearCompleted(todos), []);
 });
 
 /* ---------- clearCompleted ---------- */
@@ -307,4 +439,76 @@ test("非法筛选且视图为空时返回兜底文案", () => {
 
 test("非数组入参返回默认空状态文案", () => {
   assert.equal(core.getEmptyStateText(null, core.FILTERS.ALL), "暂无待办,添加一条开始吧 ✨");
+});
+
+/* ---------- getVisiblePage / getPaginationState(长列表分页) ---------- */
+
+test("默认每页 20 条", () => {
+  assert.equal(core.DEFAULT_PAGE_SIZE, 20);
+});
+
+test("getVisiblePage 只返回前 limit 条,不修改入参", () => {
+  const items = makeTodos(Array.from({ length: 25 }, (_, i) => ({ text: `任务 ${i}` })));
+  const snapshot = JSON.stringify(items);
+
+  const page = core.getVisiblePage(items, 20);
+
+  assert.equal(page.length, 20);
+  assert.equal(page[19].text, "任务 19");
+  assert.equal(JSON.stringify(items), snapshot, "入参不应被修改");
+  assert.notStrictEqual(page, items, "应返回新数组");
+});
+
+test("getVisiblePage 条目不足一页时返回完整副本", () => {
+  const items = makeTodos([{ text: "a" }, { text: "b" }]);
+  const page = core.getVisiblePage(items, 20);
+
+  assert.equal(page.length, 2);
+  assert.notStrictEqual(page, items);
+  assert.deepEqual(page, items);
+});
+
+test("getVisiblePage 非法 limit 回落到默认页大小", () => {
+  const items = makeTodos(Array.from({ length: 25 }, (_, i) => ({ text: `任务 ${i}` })));
+  assert.equal(core.getVisiblePage(items, 0).length, 20);
+  assert.equal(core.getVisiblePage(items, -5).length, 20);
+  assert.equal(core.getVisiblePage(items, NaN).length, 20);
+  assert.equal(core.getVisiblePage(items, "bogus").length, 20);
+});
+
+test("getVisiblePage 非数组入参返回空数组", () => {
+  assert.deepEqual(core.getVisiblePage(null, 20), []);
+  assert.deepEqual(core.getVisiblePage("oops", 20), []);
+});
+
+test("getPaginationState 计算已显示/剩余/是否还有更多", () => {
+  assert.deepEqual(core.getPaginationState(25, 20), {
+    total: 25,
+    shown: 20,
+    remaining: 5,
+    hasMore: true,
+    pageSize: 20
+  });
+
+  assert.deepEqual(core.getPaginationState(25, 40), {
+    total: 25,
+    shown: 25,
+    remaining: 0,
+    hasMore: false,
+    pageSize: 40
+  });
+
+  assert.deepEqual(core.getPaginationState(8, 20), {
+    total: 8,
+    shown: 8,
+    remaining: 0,
+    hasMore: false,
+    pageSize: 20
+  });
+});
+
+test("getPaginationState 非法总数按 0 处理", () => {
+  assert.equal(core.getPaginationState(-3, 20).total, 0);
+  assert.equal(core.getPaginationState(NaN, 20).shown, 0);
+  assert.equal(core.getPaginationState(undefined, 20).hasMore, false);
 });
