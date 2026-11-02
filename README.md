@@ -33,6 +33,8 @@ npm start
 - **冲突处理(last-write-wins)**:按服务端毫秒级 `updatedAt` 比较,较新的写入胜出;
   本地列表被其他设备改动时在页面上提示「已在其他设备更新」
 - 原有 pure-core 逻辑(`todo-core.js`)保持纯函数不变,仍可独立单元测试
+- **编辑待办**:双击待办文本进入编辑态(高亮显示),Enter 保存、Esc 取消;
+  空白文本视为取消,不写回服务端
 
 ## REST API
 
@@ -82,7 +84,7 @@ npm test
 | 文件 | 说明 |
 |---|---|
 | `index.html` | 页面入口,依次加载 `todo-core.js`、`api.js`、`todo.js` |
-| `todo-core.js` | 纯逻辑核心(create/add/toggle/remove/filter/sanitize),UMD 兼容浏览器与 Node |
+| `todo-core.js` | 纯逻辑核心(create/add/toggle/edit/remove/filter/sanitize),UMD 兼容浏览器与 Node |
 | `api.js` | 前端 API 封装:注册/登录/登出 + 待办 CRUD,Token 存 localStorage |
 | `todo.js` | DOM 渲染、事件绑定、认证流程;`loadTodos`/`saveTodos` 改为调用后端 API |
 | `server.js` | Express 后端:静态托管 + 认证 + 待办 CRUD,按用户隔离 |
