@@ -45,11 +45,19 @@ npm start
 | GET | `/api/me` | 获取当前登录用户(需鉴权) |
 | GET | `/api/todos` | 列出当前用户全部未删除待办(需鉴权) |
 | GET | `/api/todos?since=<ms>` | 增量拉取 `updatedAt > since` 的变更,含删除墓碑(需鉴权) |
-| POST | `/api/todos` | 新建待办,body `{ text, id?, completed?, createdAt? }`(需鉴权) |
+| POST | `/api/todos` | 新建待办,body `{ text, completed? }`(需鉴权) |
 | PATCH | `/api/todos/:id` | 更新待办,body `{ text?, completed? }`(需鉴权) |
 | DELETE | `/api/todos/:id` | 删除待办(软删除,需鉴权) |
 
 待办项数据结构:`{ id, text, completed, createdAt, updatedAt, deleted }`。
+
+服务端输入约束:
+
+- `text` 去除首尾空白后不能为空,且最长 **200 个字符**(与前端 `maxlength=200` 一致;
+  服务端独立校验,不能通过绕过前端限制提交超长内容)。
+- `id` 与 `createdAt` 完全由服务端生成。客户端在 `POST /api/todos` 中传入的同名字段
+  会被忽略,避免伪造 id 覆盖已有数据或伪造创建时间。
+
 `createdAt` / `updatedAt` 均为服务端毫秒时间戳;`since` 必须是非负整数,
 非法参数返回 400。
 

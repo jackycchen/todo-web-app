@@ -109,6 +109,19 @@ test("请求体自动带 JSON Content-Type", async () => {
   assert.equal(JSON.parse(call.init.body).text, "写写");
 });
 
+test("新建待办不把客户端 id / createdAt 提交给服务端", async () => {
+  localStorage.setItem("todo-app.token", "tok-a");
+  global.__response = jsonResponse(201, { id: "server-id", text: "写写" });
+  await TodoApi.createTodo({
+    id: "client-id",
+    createdAt: 123,
+    text: "写写",
+    completed: true
+  });
+  const body = JSON.parse(fetchCalls[0].init.body);
+  assert.deepEqual(body, { text: "写写", completed: true });
+});
+
 test("登出时即使服务端失败也会清除本地 token", async () => {
   localStorage.setItem("todo-app.token", "tok-logout");
   global.__response = jsonResponse(500, { error: "服务器错误" });

@@ -125,7 +125,11 @@
       return request("/api/todos?since=" + encodeURIComponent(String(since)));
     },
     createTodo: function (item) {
-      return post("/api/todos", item);
+      // id / createdAt 由服务端生成,前端只提交用户可控的业务字段
+      return post("/api/todos", {
+        text: item && item.text,
+        completed: !!(item && item.completed)
+      });
     },
     updateTodo: function (id, patchData) {
       return patch("/api/todos/" + encodeURIComponent(id), patchData);
