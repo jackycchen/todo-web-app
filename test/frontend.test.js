@@ -123,6 +123,7 @@ const INITIAL_HIDDEN = {
   "register-form": true,
   "auth-error": true,
   "empty-state": true,
+  "clear-status": true,
 };
 
 const elements = {};
@@ -276,6 +277,7 @@ test("前端端到端:注册/增删改/登出/重新登录/用户隔离", async 
   assert.equal(items[1].text, "验证多用户隔离");
   assert.equal(getElement("stats-total").textContent, "2");
   assert.equal(getElement("stats-completed").textContent, "0");
+  assert.equal(getElement("remaining-count-number").textContent, "2");
 
   // 服务端确实收到了这两条
   const serverList = await (await fetch(`${base}/api/todos`, {
@@ -289,6 +291,7 @@ test("前端端到端:注册/增删改/登出/重新登录/用户隔离", async 
   items = renderedItems();
   assert.equal(items[0].completed, true);
   assert.equal(getElement("stats-completed").textContent, "1");
+  assert.equal(getElement("remaining-count-number").textContent, "1");
 
   // ---------- 删除第二条 ----------
   clickDelete(1);
@@ -297,6 +300,7 @@ test("前端端到端:注册/增删改/登出/重新登录/用户隔离", async 
   assert.equal(items.length, 1);
   assert.equal(items[0].text, "给前端接入后端 API");
   assert.equal(getElement("stats-total").textContent, "1");
+  assert.equal(getElement("remaining-count-number").textContent, "0");
 
   // ---------- 登出 ----------
   const oldToken = window.localStorage.getItem("todo-app.token");
@@ -409,6 +413,7 @@ test("多端同步:另一会话修改后,本端轮询自动同步并提示", asy
   assert.equal(items.length, 1);
   assert.equal(items[0].completed, true, "另一端的勾选应自动同步到本端");
   assert.equal(getElement("stats-completed").textContent, "1");
+  assert.equal(getElement("remaining-count-number").textContent, "0", "多端同步后计数同步更新");
   assert.equal(getElement("sync-notice").hidden, false);
   assert.equal(getElement("sync-notice").textContent, "已在其他设备更新");
 });
@@ -492,4 +497,111 @@ test("长列表:默认只渲染一页,加载更多后补齐且切换筛选重置
   filterBtns[0].handlers.click[0](); // 全部
   assert.equal(getElement("todo-list").children.length, 20);
   assert.equal(getElement("empty-state").hidden, true);
+});
+
+test("筛选标签 / 实时计数 / 一键清除已完成", async () => {
+  // 注册独立用户 grace,避免受前序用例数据影响
+  clickTab(1);
+  fillInput("register-username", "grace");
+  fillInput("register-password", "secret123");
+  submitForm("register-form");
+  await flush();
+  assert.equal(getElement("app-view").hidden, false);
+  assert.equal(getElement("current-user").textContent, "grace");
+
+  // 空列表:未完成计数为 0,清除按钮禁用
+  assert.equal(getElement("remaining-count-number").textContent, "0");
+  assert.equal(getElement("clear-completed-btn").disabled, true);
+
+  // 添加三条进行中的待办
+  for (const text of ["任务 A", "任务 B", "任务 C"]) {
+    fillInput("todo-input", text);
+    submitForm("todo-form");
+    await flush();
+  }
+  assert.equal(getElement("remaining-count-number").textContent, "3");
+  assert.equal(
+    getElement("clear-completed-btn").disabled,
+    true,
+    "没有已完成项时清除按钮应保持禁用"
+  );
+
+  // 标签初始可访问性:只有「全部」选中,且使用 roving tabindex
+  assert.equal(filterBtns[0].getAttribute("aria-selected"), "true");
+  assert.equal(filterBtns[1].getAttribute("aria-selected"), "false");
+  assert.equal(filterBtns[2].getAttribute("aria-selected"), "false");
+  assert.equal(filterBtns[0].getAttribute("tabindex"), "0");
+  assert.equal(filterBtns[1].getAttribute("tabindex"), "-1");
+
+  // 方向键在标签间移动焦点并切换(ARIA tabs 键盘模式)
+  filterBtns[0].handlers.keydown[0]({ key: "ArrowRight", preventDefault() {} });
+  assert.equal(filterBtns[1].getAttribute("aria-selected"), "true");
+  assert.equal(filterBtns[0].getAttribute("aria-selected"), "false");
+  filterBtns[1].handlers.keydown[0]({ key: "ArrowLeft", preventDefault() {} });
+  assert.equal(filterBtns[0].getAttribute("aria-selected"), "true");
+
+  // 完成任务 A(全部视图下第 0 条),计数实时更新
+  clickCheckbox(0);
+  await flush();
+  assert.equal(getElement("remaining-count-number").textContent, "2");
+  assert.equal(getElement("stats-completed").textContent, "1");
+  assert.equal(getElement("clear-completed-btn").disabled, false);
+
+  // 切到「已完成」:只显示 A,高亮与 aria-selected 同步
+  filterBtns[2].handlers.click[0]();
+  assert.equal(filterBtns[2].getAttribute("aria-selected"), "true");
+  assert.equal(filterBtns[0].getAttribute("aria-selected"), "false");
+  assert.equal(filterBtns[2].getAttribute("tabindex"), "0");
+  assert.deepEqual(renderedItems().map((i) => i.text), ["任务 A"]);
+  assert.equal(getElement("remaining-count-number").textContent, "2", "计数为全局口径,不随筛选收窄");
+
+  // 切到「进行中」:只显示 B、C
+  filterBtns[1].handlers.click[0]();
+  assert.equal(filterBtns[1].getAttribute("aria-selected"), "true");
+  assert.deepEqual(renderedItems().map((i) => i.text), ["任务 B", "任务 C"]);
+  assert.equal(getElement("remaining-count-number").textContent, "2");
+
+  filterBtns[0].handlers.click[0](); // 回到「全部」
+  assert.equal(getElement("todo-list").children.length, 3);
+
+  // 再完成任务 B(全部视图下第 1 条)
+  clickCheckbox(1);
+  await flush();
+  assert.equal(getElement("remaining-count-number").textContent, "1");
+
+  // 第一次点击只进入二次确认态,不删除任何数据
+  const clearBtn = getElement("clear-completed-btn");
+  clearBtn.handlers.click[0]();
+  assert.match(clearBtn.textContent, /确认清除 2 项/);
+  assert.equal(clearBtn.classList.contains("is-confirming"), true);
+  assert.equal(getElement("todo-list").children.length, 3, "第一次点击不应删除待办");
+
+  // 第二次点击才真正清除,仅移除已完成项
+  clearBtn.handlers.click[0]();
+  await flush();
+  assert.deepEqual(renderedItems(), [{ text: "任务 C", completed: false }]);
+  assert.equal(getElement("stats-completed").textContent, "0");
+  assert.equal(getElement("stats-total").textContent, "1");
+  assert.equal(getElement("remaining-count-number").textContent, "1");
+  assert.equal(clearBtn.disabled, true);
+  assert.match(getElement("clear-status").textContent, /已清除 2 项已完成待办/);
+
+  // 服务端同样只剩进行中的任务 C,确认没有误删未完成项
+  const token = window.localStorage.getItem("todo-app.token");
+  const serverList = await (
+    await fetch(`${base}/api/todos`, { headers: { Authorization: "Bearer " + token } })
+  ).json();
+  assert.deepEqual(
+    serverList.map((t) => ({ text: t.text, completed: !!t.completed })),
+    [{ text: "任务 C", completed: false }]
+  );
+
+  // 已完成筛选下为空:展示筛选空状态,但不显示「添加」引导
+  filterBtns[2].handlers.click[0]();
+  assert.equal(getElement("todo-list").children.length, 0);
+  assert.equal(getElement("empty-state").hidden, false);
+  assert.equal(getElement("empty-state-title").textContent, "还没有已完成的事项");
+  assert.equal(getElement("empty-state-action").hidden, true);
+
+  filterBtns[0].handlers.click[0](); // 收尾回到「全部」
 });

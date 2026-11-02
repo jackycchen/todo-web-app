@@ -101,11 +101,31 @@
   }
 
   /**
+   * 统计待办数量,供「还剩 N 项未完成」等实时计数使用。
+   * 非数组入参按空列表处理;返回新对象,不修改入参。
+   */
+  function getStats(todos) {
+    var list = Array.isArray(todos) ? todos : [];
+    var completed = list.filter(function (t) {
+      return !!t && t.completed;
+    }).length;
+    return {
+      total: list.length,
+      completed: completed,
+      remaining: list.length - completed
+    };
+  }
+
+  /**
    * 移除所有已完成项,返回新数组(不修改入参)。
-   * 没有任何已完成项时原样返回入参,便于调用方用引用相等判断"无需写入"。
+   * 非数组入参按空列表处理;没有任何已完成项时原样返回入参,
+   * 便于调用方用引用相等判断"无需写入"。
    */
   function clearCompleted(todos) {
-    var next = todos.filter(function (t) { return !t.completed; });
+    if (!Array.isArray(todos)) return [];
+    var next = todos.filter(function (t) {
+      return !(t && t.completed);
+    });
     return next.length === todos.length ? todos : next;
   }
 
@@ -196,6 +216,7 @@
     toggleTodo: toggleTodo,
     editTodo: editTodo,
     removeTodo: removeTodo,
+    getStats: getStats,
     clearCompleted: clearCompleted,
     getVisibleTodos: getVisibleTodos,
     getVisiblePage: getVisiblePage,
