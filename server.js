@@ -20,6 +20,10 @@ const DEFAULT_PORT = 3000;
 const PASSWORD_MIN_LENGTH = 6;
 const USERNAME_MAX_LENGTH = 50;
 
+// 唯一允许通过 HTTP 访问的静态资源(根目录下的前端文件)。
+// 服务端源码、测试、配置、数据库等其他文件一律不对外暴露。
+const PUBLIC_ASSETS = new Set(["index.html", "style.css", "todo-core.js", "api.js", "todo.js"]);
+
 function hashPassword(password) {
   const salt = crypto.randomBytes(16);
   const derived = crypto.scryptSync(String(password), salt, 64);
@@ -184,14 +188,25 @@ function createApp(options = {}) {
     res.status(204).end();
   });
 
-  // ---------- 静态文件(阻止访问服务端数据目录) ----------
+  // ---------- 静态文件(仅暴露白名单中的前端资源) ----------
+  // 注意: 不能直接 express.static(__dirname),否则 server.js、lib/、test/、
+  // package.json、.git/、data/ 等敏感文件都可被直接下载。
   app.use((req, res, next) => {
-    if (req.path === "/data" || req.path.startsWith("/data/")) {
+    if (req.method !== "GET" && req.method !== "HEAD") return next();
+    let pathname;
+    try {
+      pathname = decodeURIComponent(req.path);
+    } catch (_) {
+      return res.status(400).end();
+    }
+    // 只允许根级白名单文件; "/" 由 express.static 映射到 index.html。
+    // 子目录、隐藏文件及任何编码/路径穿越变体一律 404。
+    if (pathname !== "/" && !PUBLIC_ASSETS.has(pathname.slice(1))) {
       return res.status(404).end();
     }
     next();
   });
-  app.use(express.static(staticDir));
+  app.use(express.static(staticDir, { index: "index.html", dotfiles: "deny" }));
 
   return app;
 }
