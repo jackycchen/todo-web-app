@@ -588,3 +588,69 @@ test("轮询重绘不丢失正在编辑的内容", async () => {
   assert.equal(after[0].text, "失焦保存的任务");
   assert.ok(after.some((t) => t.text === "另一端的待办"));
 });
+
+test("失焦提交空白或未改动内容时回退原文且不写服务端", async () => {
+  const target = (await serverTodos()).find((t) => t.text === "失焦保存的任务");
+  assert.ok(target, "前置数据应存在");
+
+  // 纯空白 + 失焦:与回车一样视为取消,保留原文
+  dblclickText(0);
+  let editor = editorAt(0);
+  editor.value = "   ";
+  blurEditor(editor);
+  await flush();
+  assert.equal(renderedItems()[0].text, "失焦保存的任务", "空白失焦应回退原文");
+
+  // 未改动直接回车:结束编辑但不产生写请求
+  dblclickText(0);
+  editor = editorAt(0);
+  pressEnter(editor);
+  await flush();
+
+  let list = await serverTodos();
+  let found = list.find((t) => t.id === target.id);
+  assert.equal(found.text, "失焦保存的任务");
+  assert.equal(found.updatedAt, target.updatedAt, "空白/未改动的提交不应刷新 updatedAt");
+
+  // 已被替换的旧输入框再触发 blur,不应重复提交
+  blurEditor(editor);
+  await flush();
+  found = (await serverTodos()).find((t) => t.id === target.id);
+  assert.equal(found.updatedAt, target.updatedAt, "陈旧编辑框的 blur 不应重复提交");
+});
+
+test("编辑中被轮询同步同一待办时保留输入,提交以本地输入为准", async () => {
+  // 当前列表:0 = 失焦保存的任务,1 = 另一端的待办
+  const remote = (await serverTodos()).find((t) => t.text === "另一端的待办");
+  assert.ok(remote, "前置数据应存在");
+
+  dblclickText(1);
+  let editor = editorAt(1);
+  editor.value = "本地正在输入";
+
+  // 模拟另一会话修改同一条待办:轮询会合并远端版本并整表重绘
+  const token = window.localStorage.getItem("todo-app.token");
+  const patchRes = await fetch(`${base}/api/todos/${encodeURIComponent(remote.id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+    body: JSON.stringify({ text: "远端改名" }),
+  });
+  assert.equal(patchRes.status, 200);
+
+  await new Promise((r) => setTimeout(r, 500));
+
+  editor = editorAt(1);
+  assert.ok(
+    editor.classList.contains("todo-edit-input"),
+    "远端更新同一条待办后仍应保持编辑态"
+  );
+  assert.equal(editor.value, "本地正在输入", "远端更新不应覆盖正在输入的内容");
+
+  // 提交本地输入:本地最后一次编辑胜出
+  pressEnter(editor);
+  await flush();
+
+  assert.equal(renderedItems()[1].text, "本地正在输入");
+  const found = (await serverTodos()).find((t) => t.id === remote.id);
+  assert.equal(found.text, "本地正在输入", "应以本地提交的文本为准");
+});
