@@ -1,0 +1,7 @@
+# Agent 隔离验证 v2
+
+本文件由 code-agent-runner 生成。
+
+用于验证 agent 进程隔离（独立 uid 2001）下代码编写、git commit 与交付链路正常。
+
+同时确认任务收尾不再出现假失败。
