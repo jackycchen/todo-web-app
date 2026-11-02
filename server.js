@@ -12,10 +12,13 @@
 const path = require("node:path");
 const crypto = require("node:crypto");
 const express = require("express");
-const { openDb } = require("./lib/db.js");
+const { openDb, TodoQuotaExceededError } = require("./lib/db.js");
 const core = require("./todo-core.js");
 
 const DEFAULT_PORT = 3000;
+
+/** 请求体上限:待办应用没有大载荷需求,显式收紧到 16KB(默认 100KB 过宽) */
+const JSON_BODY_LIMIT = "16kb";
 
 const PASSWORD_MIN_LENGTH = 6;
 const USERNAME_MAX_LENGTH = 50;
@@ -61,11 +64,12 @@ function bearerToken(req) {
 function createApp(options = {}) {
   const dbPath =
     options.dbPath || process.env.TODO_DB_PATH || path.join(__dirname, "data", "todo.db");
-  const store = options.store || openDb(dbPath);
+  const store =
+    options.store || openDb(dbPath, { maxTodosPerUser: options.maxTodosPerUser });
   const staticDir = options.staticDir || __dirname;
 
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: JSON_BODY_LIMIT }));
 
   // 从 Bearer token 解析当前用户
   function auth(req, res, next) {
@@ -161,7 +165,14 @@ function createApp(options = {}) {
       completed: !!body.completed,
       createdAt: Number.isFinite(body.createdAt) ? body.createdAt : Date.now()
     };
-    res.status(201).json(store.insertTodo(req.userId, item));
+    try {
+      res.status(201).json(store.insertTodo(req.userId, item));
+    } catch (err) {
+      if (err instanceof TodoQuotaExceededError) {
+        return res.status(409).json({ error: err.message, code: err.code, limit: err.limit });
+      }
+      throw err;
+    }
   });
 
   app.patch("/api/todos/:id", auth, (req, res) => {
@@ -192,6 +203,25 @@ function createApp(options = {}) {
     next();
   });
   app.use(express.static(staticDir));
+
+  // ---------- 统一错误响应(JSON) ----------
+  app.use((err, req, res, next) => {
+    if (res.headersSent) return next(err);
+    if (err && err.type === "entity.too.large") {
+      return res.status(413).json({
+        error: `请求体过大,最大允许 ${JSON_BODY_LIMIT}`,
+        code: "PAYLOAD_TOO_LARGE"
+      });
+    }
+    if (err && err.type === "entity.parse.failed") {
+      return res.status(400).json({
+        error: "请求体不是合法的 JSON",
+        code: "INVALID_JSON"
+      });
+    }
+    console.error("未处理的错误:", err);
+    res.status(500).json({ error: "服务器内部错误", code: "INTERNAL_ERROR" });
+  });
 
   return app;
 }
@@ -229,4 +259,10 @@ if (require.main === module) {
     });
 }
 
-module.exports = { createApp, startServer, hashPassword, verifyPassword };
+module.exports = {
+  createApp,
+  startServer,
+  hashPassword,
+  verifyPassword,
+  JSON_BODY_LIMIT
+};

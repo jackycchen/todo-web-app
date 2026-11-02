@@ -53,6 +53,17 @@ npm start
 `createdAt` / `updatedAt` 均为服务端毫秒时间戳;`since` 必须是非负整数,
 非法参数返回 400。
 
+### 载荷与配额限制
+
+- **请求体上限 16KB**:`express.json({ limit: "16kb" })` 显式限制,
+  超限返回 `413` `{ error, code: "PAYLOAD_TOO_LARGE" }`(不再使用默认 100KB)。
+- **非法 JSON**:返回 `400` `{ error, code: "INVALID_JSON" }`。
+- **单用户待办配额 1000 条**:仅统计未删除待办。超限新建返回
+  `409` `{ error, code: "TODO_QUOTA_EXCEEDED", limit }`;
+  覆盖已有条目不受配额影响,删除或清理已完成项后可继续创建。
+  可通过 `openDb(path, { maxTodosPerUser })` 或
+  `createApp({ maxTodosPerUser })` 覆盖(主要便于测试)。
+
 ### 增量同步与删除
 
 - 所有写操作(新增、修改、勾选完成、删除)都会刷新 `updatedAt`
