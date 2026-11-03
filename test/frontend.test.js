@@ -237,6 +237,15 @@ function clickDelete(index) {
   list.handlers.click[0]({ target: del });
 }
 
+function changePriority(index, priority) {
+  const list = getElement("todo-list");
+  const li = list.children[index];
+  const select = li.children[3]; // checkbox / text / delete / priority
+  select.value = String(priority);
+  select.closest = () => li;
+  list.handlers.change[0]({ target: select });
+}
+
 function renderedItems() {
   return getElement("todo-list").children.map((li) => ({
     text: li.children[1].textContent,
@@ -604,4 +613,65 @@ test("筛选标签 / 实时计数 / 一键清除已完成", async () => {
   assert.equal(getElement("empty-state-action").hidden, true);
 
   filterBtns[0].handlers.click[0](); // 收尾回到「全部」
+});
+
+test("优先级:前端修改后立即重排,刷新后仍然生效", async () => {
+  // 注册独立用户 henry,避免受前序用例数据影响
+  clickTab(1);
+  fillInput("register-username", "henry");
+  fillInput("register-password", "secret123");
+  submitForm("register-form");
+  await flush();
+  assert.equal(getElement("current-user").textContent, "henry");
+
+  fillInput("todo-input", "普通 A");
+  submitForm("todo-form");
+  await flush();
+  fillInput("todo-input", "普通 B");
+  submitForm("todo-form");
+  await flush();
+
+  assert.deepEqual(
+    renderedItems().map((i) => i.text),
+    ["普通 A", "普通 B"],
+    "默认同为「普通」时按创建顺序"
+  );
+
+  // 把第二条设为「高」:本地立即排到最前
+  changePriority(1, 2);
+  await new Promise((r) => setTimeout(r, 300));
+
+  assert.deepEqual(
+    renderedItems().map((i) => i.text),
+    ["普通 B", "普通 A"],
+    "高优先级立即排到最前"
+  );
+
+  // 服务端已持久化优先级,并按新顺序返回
+  const token = window.localStorage.getItem("todo-app.token");
+  const serverList = await (
+    await fetch(`${base}/api/todos`, { headers: { Authorization: "Bearer " + token } })
+  ).json();
+  assert.deepEqual(
+    serverList.map((t) => ({ text: t.text, priority: t.priority })),
+    [
+      { text: "普通 B", priority: 2 },
+      { text: "普通 A", priority: 1 }
+    ]
+  );
+
+  // 模拟刷新页面:登出后重新登录,顺序仍由服务端决定
+  getElement("logout-btn").handlers.click[0]();
+  await flush();
+  clickTab(0);
+  fillInput("login-username", "henry");
+  fillInput("login-password", "secret123");
+  submitForm("login-form");
+  await flush();
+
+  assert.deepEqual(
+    renderedItems().map((i) => i.text),
+    ["普通 B", "普通 A"],
+    "刷新后优先级排序仍然生效"
+  );
 });
