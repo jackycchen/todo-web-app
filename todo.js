@@ -72,6 +72,16 @@
   var clearConfirmTimer = null;
   var clearStatusTimer = null;
 
+  /**
+   * 当前编辑态:{ id, value, selectionStart, selectionEnd, composing }。
+   * 保存在模块级而非 DOM 上,以便轮询/保存引起的整表重绘后,
+   * 仍能恢复输入框与用户尚未提交的内容。
+   */
+  var editState = null;
+
+  /** 渲染期间标记:避免重建 DOM 时触发的 blur 误提交 */
+  var isRendering = false;
+
   /* ---------- DOM 引用 ---------- */
 
   var authView = document.getElementById("auth-view");
@@ -118,6 +128,8 @@
     stopPolling();
     resetClearConfirm(false);
     hideClearStatus();
+    // 退出登录后不应在下次进入时恢复上一次的编辑态
+    editState = null;
     authView.hidden = false;
     appView.hidden = true;
   }
@@ -466,15 +478,23 @@
     // 只渲染当前已加载的一页,剩余条目由「加载更多」按需追加
     var page = core.getVisiblePage(visible, visibleLimit);
 
-    list.innerHTML = "";
-    page.forEach(function (todo) {
-      list.appendChild(createTodoItem(todo));
-    });
+    // 整表重绘会移除正在编辑的输入框;先标记渲染中,避免 blur 处理器误提交,
+    // 重绘完成后再按 editState 恢复编辑框与未提交输入。
+    isRendering = true;
+    try {
+      list.innerHTML = "";
+      page.forEach(function (todo) {
+        list.appendChild(createTodoItem(todo));
+      });
+    } finally {
+      isRendering = false;
+    }
 
     renderSummary();
     renderClearCompletedButton();
     updateEmptyState(visible.length);
     renderPagination(visible.length);
+    restoreEditMode(page);
   }
 
   function createTodoItem(todo) {
@@ -749,6 +769,98 @@
 
   /* ---------- 编辑待办 ---------- */
 
+  /** 按 id 找到当前 DOM 中的列表项(重绘后旧引用可能已失效) */
+  function findTodoItem(id) {
+    return list.querySelector('[data-id="' + id + '"]');
+  }
+
+  /**
+   * 是否处于输入法组合期(如中文候选词尚未确认)。
+   * 组合期的回车属于输入法确认,不能当作「保存」;
+   * isComposing 与 keyCode 229 覆盖不同浏览器/旧版行为。
+   */
+  function isComposingEvent(e, editor) {
+    if (!e) return false;
+    if (e.isComposing || e.keyCode === 229) return true;
+    if (editState && editState.composing) return true;
+    return !!(editor && editor.composing);
+  }
+
+  /** 记录输入框当前内容与选区,供整表重绘后恢复 */
+  function rememberEditValue(editor) {
+    if (!editState) return;
+    editState.value = editor.value;
+    if (typeof editor.selectionStart === "number") editState.selectionStart = editor.selectionStart;
+    if (typeof editor.selectionEnd === "number") editState.selectionEnd = editor.selectionEnd;
+  }
+
+  /**
+   * 在指定列表项上挂载编辑输入框。
+   * selectionStart/selectionEnd 用于重绘后恢复光标;不传则默认全选。
+   */
+  function attachEditor(li, id, value, selectionStart, selectionEnd) {
+    var textEl = li.querySelector(".todo-text");
+    if (!textEl) return null;
+
+    var editor = document.createElement("input");
+    editor.type = "text";
+    editor.className = "todo-edit-input";
+    editor.value = value;
+    editor.setAttribute("aria-label", "编辑待办:「" + value + "」");
+
+    editor.addEventListener("input", function () {
+      rememberEditValue(editor);
+    });
+
+    // 输入法组合期:记录状态,期间不响应 Enter/Esc
+    editor.addEventListener("compositionstart", function () {
+      if (editState) editState.composing = true;
+    });
+    editor.addEventListener("compositionend", function () {
+      if (!editState) return;
+      editState.composing = false;
+      rememberEditValue(editor);
+    });
+
+    editor.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") {
+        // 候选词确认时的回车不应提交待办
+        if (isComposingEvent(e, editor)) return;
+        e.preventDefault();
+        commitEdit(li, id, editor);
+      } else if (e.key === "Escape") {
+        if (isComposingEvent(e, editor)) return;
+        e.preventDefault();
+        cancelEdit(li);
+      }
+    });
+
+    // 失焦即保存:点击页面其他位置不再丢弃未提交的编辑
+    editor.addEventListener("blur", function () {
+      if (isRendering) return;
+      if (!editState || editState.id !== id) return;
+      rememberEditValue(editor);
+      commitEdit(li, id, editor);
+    });
+
+    textEl.hidden = true;
+    li.classList.add("is-editing");
+    li.insertBefore(editor, textEl.nextSibling);
+
+    editor.focus();
+    if (typeof selectionStart === "number" && typeof selectionEnd === "number") {
+      if (typeof editor.setSelectionRange === "function") {
+        editor.setSelectionRange(selectionStart, selectionEnd);
+      } else {
+        editor.selectionStart = selectionStart;
+        editor.selectionEnd = selectionEnd;
+      }
+    } else if (typeof editor.select === "function") {
+      editor.select();
+    }
+    return editor;
+  }
+
   /**
    * 进入编辑态:双击 .todo-text 时把文本替换为输入框。
    * 同一时刻只允许一条待办处于编辑态。
@@ -757,40 +869,48 @@
     if (!li || li.classList.contains("is-editing")) return;
     var idx = findTodoIndex(id);
     if (idx < 0) return;
-    var textEl = li.querySelector(".todo-text");
-    if (!textEl) return;
 
-    var editing = list.querySelector(".todo-item.is-editing");
-    if (editing && editing !== li) cancelEdit(editing);
+    // 切换到另一条待办时,先退出上一条的编辑态(不保存)
+    if (editState && editState.id !== id) cancelEdit(findTodoItem(editState.id));
 
-    var editor = document.createElement("input");
-    editor.type = "text";
-    editor.className = "todo-edit-input";
-    editor.value = todos[idx].text;
-    editor.setAttribute("aria-label", "编辑待办:「" + todos[idx].text + "」");
-    editor.addEventListener("keydown", function (e) {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        commitEdit(li, id, editor);
-      } else if (e.key === "Escape") {
-        e.preventDefault();
-        cancelEdit(li);
-      }
-    });
-
-    textEl.hidden = true;
-    li.classList.add("is-editing");
-    li.insertBefore(editor, textEl.nextSibling);
-    editor.focus();
-    if (typeof editor.select === "function") editor.select();
+    editState = {
+      id: id,
+      value: todos[idx].text,
+      selectionStart: null,
+      selectionEnd: null,
+      composing: false
+    };
+    attachEditor(li, id, todos[idx].text);
   }
 
-  /** 保存编辑:仅当 core.editTodo 返回新数组时持久化并重绘 */
+  /**
+   * 保存编辑。
+   *  - 空白文本或内容未变化:数据不变,仅退出编辑态
+   *  - 仅当 core.editTodo 返回新数组时持久化并重绘
+   */
   function commitEdit(li, id, editor) {
-    var next = core.editTodo(todos, id, editor.value);
+    // 已提交/取消(如 Enter 后又触发 blur)时直接忽略,避免重复保存
+    if (!editState || editState.id !== id) return;
+
+    var idx = findTodoIndex(id);
+    if (idx < 0) {
+      exitEditMode(li);
+      return;
+    }
+
+    var raw = editor ? editor.value : editState.value;
+    var normalized = raw == null ? "" : String(raw).trim();
+    if (!normalized || normalized === todos[idx].text) {
+      // 空白文本或未改动:不写入、不整表重绘,保持其他交互(如点击删除)可用
+      exitEditMode(li);
+      return;
+    }
+
+    // 先清除编辑态,避免 render/失焦重入
+    editState = null;
+    var next = core.editTodo(todos, id, raw);
     if (next === todos) {
-      // 空白文本或 id 不存在:数据不变,仅退出编辑态
-      cancelEdit(li);
+      exitEditMode(li);
       return;
     }
     todos = next;
@@ -798,14 +918,56 @@
     render();
   }
 
-  /** 取消编辑,恢复原始文本展示 */
+  /** 取消编辑,恢复原始文本展示(不写入) */
   function cancelEdit(li) {
-    if (!li || !li.classList.contains("is-editing")) return;
+    exitEditMode(li);
+  }
+
+  /** 移除输入框、恢复文本展示并清除编辑态 */
+  function exitEditMode(li) {
+    editState = null;
+    if (!li || !li.classList || !li.classList.contains("is-editing")) return;
     var editor = li.querySelector(".todo-edit-input");
     if (editor && editor.parentNode) editor.parentNode.removeChild(editor);
     var textEl = li.querySelector(".todo-text");
     if (textEl) textEl.hidden = false;
     li.classList.remove("is-editing");
+  }
+
+  /**
+   * 整表重绘后恢复编辑态:条目仍可见时重建输入框并还原未提交内容与选区;
+   * 条目被筛选/远端删除时放弃编辑态。
+   */
+  function restoreEditMode(page) {
+    if (!editState) return;
+
+    var stillVisible = false;
+    for (var i = 0; i < page.length; i++) {
+      if (page[i].id === editState.id) {
+        stillVisible = true;
+        break;
+      }
+    }
+    if (!stillVisible) {
+      editState = null;
+      return;
+    }
+
+    var li = findTodoItem(editState.id);
+    if (!li) {
+      editState = null;
+      return;
+    }
+    if (li.classList.contains("is-editing")) return;
+
+    var editor = attachEditor(
+      li,
+      editState.id,
+      editState.value,
+      editState.selectionStart,
+      editState.selectionEnd
+    );
+    if (!editor) editState = null;
   }
 
   /** 同步筛选标签的选中态、tabindex 与关联的 tabpanel 标签 */

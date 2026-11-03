@@ -32,9 +32,25 @@ function createElement(tag) {
     _text: "",
     value: "",
     checked: false,
+    parentNode: null,
     appendChild(child) {
       el.children.push(child);
+      child.parentNode = el;
       return child;
+    },
+    insertBefore(node, ref) {
+      if (!ref) return el.appendChild(node);
+      const index = el.children.indexOf(ref);
+      if (index < 0) return el.appendChild(node);
+      el.children.splice(index, 0, node);
+      node.parentNode = el;
+      return node;
+    },
+    removeChild(node) {
+      const index = el.children.indexOf(node);
+      if (index >= 0) el.children.splice(index, 1);
+      node.parentNode = null;
+      return node;
     },
     setAttribute(name, val) {
       if (name === "class") el.className = val;
@@ -47,6 +63,7 @@ function createElement(tag) {
       (el.handlers[type] = el.handlers[type] || []).push(fn);
     },
     focus() {},
+    select() {},
     closest() {
       return null;
     },
@@ -58,8 +75,15 @@ function createElement(tag) {
       if (idMatch) {
         return el.children.find((c) => c.dataset.id === idMatch[1]) || null;
       }
-      if (sel === ".todo-checkbox") {
-        return el.children.find((c) => c.classList.contains("todo-checkbox")) || null;
+      if (sel.startsWith(".")) {
+        // 支持 ".class" 与 ".a.b" 形式的简单类选择器(深度优先)
+        const classes = sel.slice(1).split(".").filter(Boolean);
+        const queue = el.children.slice();
+        while (queue.length) {
+          const node = queue.shift();
+          if (classes.every((c) => node.classList.contains(c))) return node;
+          if (node.children) queue.push(...node.children);
+        }
       }
       return null;
     },
@@ -101,7 +125,20 @@ function createElement(tag) {
     },
     set(v) {
       el._html = String(v);
-      if (el._html === "") el.children.length = 0;
+      if (el._html === "") {
+        el.children.forEach((child) => {
+          if (child) child.parentNode = null;
+        });
+        el.children.length = 0;
+      }
+    },
+  });
+  Object.defineProperty(el, "nextSibling", {
+    get() {
+      if (!el.parentNode) return null;
+      const siblings = el.parentNode.children;
+      const index = siblings.indexOf(el);
+      return index >= 0 ? siblings[index + 1] || null : null;
     },
   });
   Object.defineProperty(el, "textContent", {
@@ -242,6 +279,38 @@ function renderedItems() {
     text: li.children[1].textContent,
     completed: li.children[0].checked,
   }));
+}
+
+/** 注册独立用户并添加若干待办,避免用例之间互相影响 */
+async function registerAndSeed(username, texts) {
+  clickTab(1);
+  fillInput("register-username", username);
+  fillInput("register-password", "secret123");
+  submitForm("register-form");
+  await flush();
+  for (const text of texts) {
+    fillInput("todo-input", text);
+    submitForm("todo-form");
+    await flush();
+  }
+}
+
+/** 双击第 index 条待办的文本,返回列表项与编辑输入框 */
+function startEditing(index) {
+  const list = getElement("todo-list");
+  const li = list.children[index];
+  const textEl = li.children[1];
+  textEl.closest = () => li;
+  list.handlers.dblclick[0]({ target: textEl });
+  const editor = li.children.find((c) => c.classList.contains("todo-edit-input"));
+  return { li, editor };
+}
+
+/** 取当前第 index 条待办的编辑输入框(重绘后需重新查询) */
+function editingEditor(index) {
+  const li = getElement("todo-list").children[index];
+  if (!li) return null;
+  return li.children.find((c) => c.classList.contains("todo-edit-input")) || null;
 }
 
 test("前端端到端:注册/增删改/登出/重新登录/用户隔离", async () => {
@@ -604,4 +673,163 @@ test("筛选标签 / 实时计数 / 一键清除已完成", async () => {
   assert.equal(getElement("empty-state-action").hidden, true);
 
   filterBtns[0].handlers.click[0](); // 收尾回到「全部」
+});
+
+/* ---------- 双击编辑 ---------- */
+
+test("双击编辑:失焦(点击别处)自动保存而不是丢弃", async () => {
+  await registerAndSeed("henry", ["失焦前", "保持不变"]);
+  assert.deepEqual(renderedItems().map((i) => i.text), ["失焦前", "保持不变"]);
+
+  const { li, editor } = startEditing(0);
+  assert.ok(editor, "双击文本后应出现编辑输入框");
+  assert.equal(li.classList.contains("is-editing"), true);
+  assert.equal(editor.value, "失焦前");
+
+  // 输入新内容后点击别处:blur 应提交保存
+  editor.value = "失焦后";
+  editor.handlers.input[0]({});
+  editor.handlers.blur[0]({});
+  await flush();
+
+  assert.deepEqual(renderedItems().map((i) => i.text), ["失焦后", "保持不变"]);
+  assert.equal(getElement("todo-list").children[0].classList.contains("is-editing"), false);
+
+  const token = window.localStorage.getItem("todo-app.token");
+  const serverList = await (
+    await fetch(`${base}/api/todos`, { headers: { Authorization: "Bearer " + token } })
+  ).json();
+  assert.ok(
+    serverList.some((t) => t.text === "失焦后"),
+    "失焦保存应通过 PATCH 提交到服务端"
+  );
+  assert.ok(!serverList.some((t) => t.text === "失焦前"));
+});
+
+test("双击编辑:内容未改动或为空白时失焦不产生写入", async () => {
+  await registerAndSeed("iris", ["原文本"]);
+
+  const first = startEditing(0);
+  first.editor.value = "   ";
+  first.editor.handlers.blur[0]({});
+  await flush();
+  assert.deepEqual(renderedItems().map((i) => i.text), ["原文本"], "空白内容应回退为原文");
+
+  const second = startEditing(0);
+  second.editor.value = "原文本";
+  second.editor.handlers.blur[0]({});
+  await flush();
+  assert.deepEqual(renderedItems().map((i) => i.text), ["原文本"]);
+
+  const token = window.localStorage.getItem("todo-app.token");
+  const serverList = await (
+    await fetch(`${base}/api/todos`, { headers: { Authorization: "Bearer " + token } })
+  ).json();
+  assert.deepEqual(serverList.map((t) => t.text), ["原文本"]);
+});
+
+test("双击编辑:输入法组合期回车不提交,确认候选词后再回车才保存", async () => {
+  await registerAndSeed("ivy", ["输入法任务"]);
+
+  const { li, editor } = startEditing(0);
+  editor.value = "输入法中";
+  editor.handlers.input[0]({});
+  editor.handlers.compositionstart[0]({});
+
+  // 组合期的回车(候选词确认)不应触发保存
+  let prevented = false;
+  editor.handlers.keydown[0]({
+    key: "Enter",
+    isComposing: true,
+    keyCode: 229,
+    preventDefault() {
+      prevented = true;
+    },
+  });
+  assert.equal(prevented, false, "组合期回车不应被当作提交处理");
+  assert.equal(editingEditor(0), editor, "组合期回车后仍应保持编辑态");
+  assert.deepEqual(renderedItems().map((i) => i.text), ["输入法任务"]);
+
+  // 部分浏览器不设置 isComposing,仅以 keyCode 229 标识组合期
+  editor.handlers.keydown[0]({ key: "Enter", keyCode: 229, preventDefault() {} });
+  assert.equal(editingEditor(0), editor, "keyCode 229 同样应视为组合期");
+
+  // 候选词确认、组合结束后的回车才提交
+  editor.value = "输入法完成";
+  editor.handlers.compositionend[0]({});
+  editor.handlers.keydown[0]({ key: "Enter", preventDefault() {} });
+  await flush();
+
+  assert.deepEqual(renderedItems().map((i) => i.text), ["输入法完成"]);
+  assert.equal(editingEditor(0), null, "提交后应退出编辑态");
+
+  const token = window.localStorage.getItem("todo-app.token");
+  const serverList = await (
+    await fetch(`${base}/api/todos`, { headers: { Authorization: "Bearer " + token } })
+  ).json();
+  assert.deepEqual(serverList.map((t) => t.text), ["输入法完成"]);
+
+  // 组合期间 Escape 只取消候选词,不退出编辑态(此处单独验证)
+  const again = startEditing(0);
+  again.editor.handlers.compositionstart[0]({});
+  let escaped = false;
+  again.editor.handlers.keydown[0]({
+    key: "Escape",
+    isComposing: true,
+    preventDefault() {
+      escaped = true;
+    },
+  });
+  assert.equal(escaped, false);
+  assert.equal(editingEditor(0), again.editor, "组合期 Esc 不应退出编辑态");
+
+  // 收尾:组合结束 + Esc 取消编辑
+  again.editor.handlers.compositionend[0]({});
+  again.editor.handlers.keydown[0]({ key: "Escape", preventDefault() {} });
+  assert.equal(editingEditor(0), null);
+  assert.deepEqual(renderedItems().map((i) => i.text), ["输入法完成"]);
+});
+
+test("双击编辑:轮询整表重绘后仍保留编辑态与未提交输入", async () => {
+  await registerAndSeed("judy", ["编辑中的任务", "远端会变的任务"]);
+
+  const { editor } = startEditing(0);
+  editor.value = "尚未提交的输入";
+  editor.handlers.input[0]({});
+
+  // 同一账号的另一个会话修改另一条待办,触发本端轮询后的 render()
+  const token = window.localStorage.getItem("todo-app.token");
+  const serverList = await (
+    await fetch(`${base}/api/todos`, { headers: { Authorization: "Bearer " + token } })
+  ).json();
+  const target = serverList.find((t) => t.text === "远端会变的任务");
+  assert.ok(target);
+  const patchRes = await fetch(`${base}/api/todos/${encodeURIComponent(target.id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+    body: JSON.stringify({ completed: true }),
+  });
+  assert.equal(patchRes.status, 200);
+
+  // 轮询间隔 150ms:等待同步与重绘完成
+  await new Promise((r) => setTimeout(r, 600));
+
+  const list = getElement("todo-list");
+  const editedLi = list.children[0];
+  const restored = editingEditor(0);
+  assert.ok(restored, "轮询重绘后编辑输入框应被恢复");
+  assert.equal(editedLi.classList.contains("is-editing"), true, "应仍处于编辑态");
+  assert.equal(restored.value, "尚未提交的输入", "未提交的输入不应丢失");
+  assert.equal(list.children[1].children[0].checked, true, "远端变更应已同步并重绘");
+
+  // 失焦保存:轮询期间保留的内容正常提交
+  restored.handlers.blur[0]({});
+  await flush();
+  assert.deepEqual(renderedItems()[0].text, "尚未提交的输入");
+
+  const after = await (
+    await fetch(`${base}/api/todos`, { headers: { Authorization: "Bearer " + token } })
+  ).json();
+  assert.ok(after.some((t) => t.text === "尚未提交的输入"), "编辑内容应写入服务端");
+  assert.ok(!after.some((t) => t.text === "编辑中的任务"));
 });
