@@ -543,3 +543,118 @@ test("增量接口需要鉴权,且只返回当前用户的数据", async () => {
   const aliceChanges = await (await get("/api/todos?since=0", aliceToken)).json();
   assert.ok(aliceChanges.some((t) => t.id === item.id));
 });
+
+/* ---------- 请求体载荷上限 ---------- */
+
+test("超过请求体上限返回 413 JSON 错误", async () => {
+  const token = await ensureUser("payload_limit", "secret123");
+  // 20KB,超过显式的 16KB 上限(默认 100KB 会放行)
+  const res = await post("/api/todos", { text: "x".repeat(20 * 1024) }, token);
+  assert.equal(res.status, 413);
+  const body = await res.json();
+  assert.equal(body.code, "PAYLOAD_TOO_LARGE");
+});
+
+test("非法 JSON 请求体返回 400 JSON 错误", async () => {
+  const res = await fetch(base + "/api/todos", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{ this is not json",
+  });
+  assert.equal(res.status, 400);
+  const body = await res.json();
+  assert.equal(body.code, "INVALID_JSON");
+});
+
+/* ---------- 单用户待办配额 ---------- */
+
+test("单用户待办达到配额返回 409,删除后释放额度且配额按用户隔离", async () => {
+  const quotaDb = path.join(os.tmpdir(), `todo-quota-${process.pid}-${Date.now()}.db`);
+  const started = await startServer({
+    dbPath: quotaDb,
+    port: 0,
+    staticDir: path.join(__dirname, ".."),
+    maxTodosPerUser: 3,
+  });
+  const qbase = `http://127.0.0.1:${started.port}`;
+  const call = (method, pathname, body, token) => {
+    const headers = {};
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+    if (token) headers.Authorization = "Bearer " + token;
+    return fetch(qbase + pathname, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  };
+
+  try {
+    const reg = await call("POST", "/api/register", {
+      username: "quota",
+      password: "secret123",
+    });
+    const { token } = await reg.json();
+
+    const created = [];
+    for (let i = 0; i < 3; i++) {
+      const res = await call("POST", "/api/todos", { text: `配额任务 ${i}` }, token);
+      assert.equal(res.status, 201);
+      created.push((await res.json()).id);
+    }
+
+    // 第 4 条被配额拒绝,并返回可编程判断的 code 与上限
+    const over = await call("POST", "/api/todos", { text: "超出配额" }, token);
+    assert.equal(over.status, 409);
+    const overBody = await over.json();
+    assert.equal(overBody.code, "TODO_QUOTA_EXCEEDED");
+    assert.equal(overBody.limit, 3);
+
+    // 配额只限制新建:更新已有条目仍然成功
+    const update = await call(
+      "PATCH",
+      "/api/todos/" + created[0],
+      { text: "配额内改名" },
+      token
+    );
+    assert.equal(update.status, 200);
+    assert.equal((await update.json()).text, "配额内改名");
+
+    // 配额按用户隔离:另一个用户仍可创建
+    const otherReg = await call("POST", "/api/register", {
+      username: "quota_other",
+      password: "secret123",
+    });
+    const otherToken = (await otherReg.json()).token;
+    const otherCreate = await call(
+      "POST",
+      "/api/todos",
+      { text: "他人配额独立" },
+      otherToken
+    );
+    assert.equal(otherCreate.status, 201);
+
+    // 删除一条释放额度,可以继续创建;墓碑本身不占配额
+    const delRes = await call("DELETE", "/api/todos/" + created[1], undefined, token);
+    assert.equal(delRes.status, 204);
+    const afterDelete = await call("POST", "/api/todos", { text: "删除后新建" }, token);
+    assert.equal(afterDelete.status, 201);
+
+    // 释放出来的额度已被新条目占回,再次新建仍被拒绝
+    const fullAgain = await call("POST", "/api/todos", { text: "再次超出" }, token);
+    assert.equal(fullAgain.status, 409);
+    assert.equal((await fullAgain.json()).code, "TODO_QUOTA_EXCEEDED");
+
+    // 列表中的数量始终不超过配额(已删除项不出现在全量列表)
+    const list = await (await call("GET", "/api/todos", undefined, token)).json();
+    assert.equal(list.length, 3);
+  } finally {
+    await new Promise((resolve) => started.server.close(resolve));
+    for (const suffix of ["", "-wal", "-shm"]) {
+      try {
+        fs.unlinkSync(quotaDb + suffix);
+      } catch (_) {
+        /* 忽略清理失败 */
+      }
+    }
+  }
+});
