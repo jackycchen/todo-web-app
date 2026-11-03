@@ -314,7 +314,18 @@
         setLastSyncedItem(serverItem);
       });
     })).then(function () {
-      if (idChanged) render();
+      // createdAt 由服务端时钟生成,可能与本机时钟不同;并发新建时服务端处理
+      // 顺序也可能与本地不同。这里按与服务端相同的规则(priority DESC,
+      // createdAt ASC)重排一次,避免刷新前后列表顺序跳变。
+      var sorted = core.sortTodos(todos);
+      var orderChanged = sorted.some(function (t, i) {
+        return t.id !== todos[i].id;
+      });
+      if (orderChanged) todos = sorted;
+      if (idChanged || orderChanged) {
+        // 用户正在行内编辑时不重绘,避免销毁输入框;下次渲染会使用新顺序。
+        if (!list.querySelector(".todo-item.is-editing")) render();
+      }
     });
   }
 

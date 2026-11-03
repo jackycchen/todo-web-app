@@ -675,3 +675,52 @@ test("优先级:前端修改后立即重排,刷新后仍然生效", async () => 
     "刷新后优先级排序仍然生效"
   );
 });
+
+test("保存后按服务端确认的 createdAt 重排,避免刷新前后顺序跳变", async () => {
+  // 上一个用例结束时登录的是 henry,先登出并注册独立用户
+  getElement("logout-btn").handlers.click[0]();
+  await flush();
+  clickTab(1);
+  fillInput("register-username", "ivan");
+  fillInput("register-password", "secret123");
+  submitForm("register-form");
+  await flush();
+
+  const realFetch = global.fetch;
+  let createIndex = 0;
+  // 模拟服务端处理顺序与本地提交顺序相反:先提交的拿到更大的 createdAt。
+  // 客户端必须以服务端确认值为准重排,否则刷新后会看到另一种顺序。
+  const serverCreatedAt = [2000, 1000];
+  global.fetch = function (url, opts) {
+    return realFetch(url, opts).then(function (res) {
+      const isCreate =
+        opts && opts.method === "POST" && /\/api\/todos$/.test(String(url));
+      if (!isCreate) return res;
+      return res.json().then(function (data) {
+        const createdAt = serverCreatedAt[createIndex % serverCreatedAt.length];
+        createIndex += 1;
+        return new Response(
+          JSON.stringify(Object.assign({}, data, { createdAt: createdAt })),
+          { status: res.status, headers: { "Content-Type": "application/json" } }
+        );
+      });
+    });
+  };
+
+  try {
+    fillInput("todo-input", "先创建的");
+    submitForm("todo-form");
+    await flush();
+    fillInput("todo-input", "后创建的");
+    submitForm("todo-form");
+    await flush();
+
+    assert.deepEqual(
+      renderedItems().map((i) => i.text),
+      ["后创建的", "先创建的"],
+      "本地顺序应与服务端确认的 createdAt 排序一致"
+    );
+  } finally {
+    global.fetch = realFetch;
+  }
+});
