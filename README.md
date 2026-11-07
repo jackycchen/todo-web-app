@@ -54,6 +54,8 @@ npm start
 - **空状态引导**:无待办(或筛选无匹配)时展示插画与引导文案,可直接聚焦输入框添加第一条
 - **长列表分页**:超过 20 条时只渲染当前页,滚动到底部自动加载下一页,
   也可用「加载更多」按钮手动追加;分页大小可通过 `window.TODO_PAGE_SIZE` 调整
+- **优先级**:每条待办可设为「高 / 普通 / 低」,列表按优先级从高到低展示,
+  同级按创建时间升序;修改优先级会刷新 `updatedAt`,可同步到其他端
 - **筛选标签**:「全部 / 进行中 / 已完成」三个标签可切换展示集合,选中态带
   `role="tab"` / `aria-selected` 等无障碍属性,并支持方向键切换
 - **实时计数**:筛选栏下方实时显示「还剩 N 项未完成」,随增删改与多端同步自动更新
@@ -75,11 +77,16 @@ npm start
 | GET | `/api/me` | 获取当前登录用户(需鉴权) |
 | GET | `/api/todos` | 列出当前用户全部未删除待办(需鉴权) |
 | GET | `/api/todos?since=<ms>` | 增量拉取 `updatedAt > since` 的变更,含删除墓碑(需鉴权) |
-| POST | `/api/todos` | 新建待办,body `{ text, completed? }`(需鉴权) |
-| PATCH | `/api/todos/:id` | 更新待办,body `{ text?, completed? }`(需鉴权) |
+| POST | `/api/todos` | 新建待办,body `{ text, completed?, priority? }`(需鉴权) |
+| PATCH | `/api/todos/:id` | 更新待办,body `{ text?, completed?, priority? }`(需鉴权) |
 | DELETE | `/api/todos/:id` | 删除待办(软删除,需鉴权) |
 
-待办项数据结构:`{ id, text, completed, createdAt, updatedAt, deleted }`。
+待办项数据结构:`{ id, text, completed, priority, createdAt, updatedAt, deleted }`。
+
+优先级 `priority` 取值为整数 `0`(低)/ `1`(普通)/ `2`(高),新待办默认 `1`。
+之所以用数值而不是字符串,是因为排序可以直接在 SQL 中完成
+(`ORDER BY priority DESC, created_at ASC`),也便于以后插入中间档位;
+非法值(字符串、小数、越界整数等)一律返回 400,不会被写入。
 
 服务端输入约束:
 
@@ -91,6 +98,20 @@ npm start
 `createdAt` / `updatedAt` 均为服务端毫秒时间戳;`since` 必须是非负整数,
 非法参数返回 400。
 
+### 载荷与配额限制
+
+- **请求体上限 16KB**:`express.json({ limit: "16kb" })` 显式限制
+  (不再使用默认的 100KB),超限返回
+  `413` `{ error, code: "PAYLOAD_TOO_LARGE" }`。
+- **非法 JSON**:返回 `400` `{ error, code: "INVALID_JSON" }`,
+  不再落到 Express 默认的 HTML 错误页。
+- **单用户待办配额 1000 条**:只统计未删除待办。达到上限后新建返回
+  `409` `{ error, code: "TODO_QUOTA_EXCEEDED", limit }`;
+  更新已有条目不受影响,删除后立即释放额度。
+  墓碑(已删除记录)不计入配额,因此长期使用不会因历史删除次数累积而撞上限。
+  可通过 `openDb(path, { maxTodosPerUser })` 或
+  `startServer({ maxTodosPerUser })` 覆盖(主要便于测试与运维调优)。
+
 ### 增量同步与删除
 
 - 所有写操作(新增、修改、勾选完成、删除)都会刷新 `updatedAt`
@@ -98,8 +119,9 @@ npm start
 - 删除采用 **soft delete tombstone**:数据库保留记录并置 `deleted = 1`,
   删除同样刷新 `updatedAt`。全量接口过滤墓碑,增量接口返回
   `deleted: true` 的条目,其他端据此移除本地项。
-- 旧数据库自动迁移:`ALTER TABLE` 新增 `updated_at` / `deleted` 列,
-  旧记录 `updated_at` 回填为 `created_at`。
+- 旧数据库自动迁移:`ALTER TABLE` 新增 `updated_at` / `deleted` / `priority` 列,
+  旧记录 `updated_at` 回填为 `created_at`,`priority` 回填为 `1`(普通)。
+  因此迁移后未设置优先级的条目仍按 `created_at` 升序,原有列表观感不变。
 
 ### 会话生命周期
 
@@ -154,6 +176,7 @@ npm test
 | `test/api-client.test.js` | 前端 API 客户端单元测试(假 fetch) |
 | `test/frontend.test.js` | 前端端到端测试(DOM 轻量桩,含双端轮询同步) |
 | `test/migration.test.js` | 旧库迁移测试(ALTER TABLE + updatedAt 回填) |
+| `test/priority.test.js` | 优先级测试(旧库默认值 / SQL 排序 / 增量同步) |
 | `test/session.test.js` | 会话生命周期测试(过期 401 / 惰性删除 / 定时清理 / TTL 解析 / expires_at 迁移) |
 
 push 验证 2026-10-16

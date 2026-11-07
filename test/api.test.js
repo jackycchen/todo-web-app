@@ -465,6 +465,74 @@ test("since 参数非法时返回 400", async () => {
   }
 });
 
+/* ---------- 优先级 ---------- */
+
+test("全量列表按优先级排序:高在前,同级按创建时间升序", async () => {
+  const token = await ensureUser("priority_order", "secret123");
+
+  const normal1 = (await createTodo(token, "普通一")).data;
+  await new Promise((r) => setTimeout(r, 2));
+  const normal2 = (await createTodo(token, "普通二")).data;
+  await new Promise((r) => setTimeout(r, 2));
+  const high = (await createTodo(token, "高优先级")).data;
+  await new Promise((r) => setTimeout(r, 2));
+  const low = (await createTodo(token, "低优先级")).data;
+
+  assert.equal(normal1.priority, 1, "新待办默认「普通」");
+  assert.equal(high.priority, 1);
+
+  const highRes = await patch(`/api/todos/${high.id}`, { priority: 2 }, token);
+  assert.equal(highRes.status, 200);
+  const lowRes = await patch(`/api/todos/${low.id}`, { priority: 0 }, token);
+  assert.equal(lowRes.status, 200);
+
+  const list = await (await get("/api/todos", token)).json();
+  assert.deepEqual(
+    list.map((t) => t.text),
+    ["高优先级", "普通一", "普通二", "低优先级"],
+    "先按优先级降序,同级按 createdAt 升序"
+  );
+  assert.deepEqual(list.map((t) => t.priority), [2, 1, 1, 0]);
+  assert.ok(normal1.createdAt <= normal2.createdAt);
+});
+
+test("修改优先级会刷新 updatedAt,并能通过 since 增量拉到", async () => {
+  const token = await ensureUser("priority_since", "secret123");
+  const item = (await createTodo(token, "优先级同步")).data;
+  assert.equal(item.priority, 1);
+
+  const patchedRes = await patch(`/api/todos/${item.id}`, { priority: 2 }, token);
+  assert.equal(patchedRes.status, 200);
+  const patched = await patchedRes.json();
+  assert.equal(patched.priority, 2);
+  assert.ok(patched.updatedAt > item.updatedAt, "修改优先级必须刷新 updatedAt");
+
+  const changes = await (
+    await get(`/api/todos?since=${item.updatedAt}`, token)
+  ).json();
+  const found = changes.find((t) => t.id === item.id);
+  assert.ok(found, "修改优先级后应出现在增量结果中");
+  assert.equal(found.priority, 2);
+  assert.equal(found.updatedAt, patched.updatedAt);
+});
+
+test("非法 priority 返回 400 且不改变数据", async () => {
+  const token = await ensureUser("priority_invalid", "secret123");
+  const item = (await createTodo(token, "优先级校验")).data;
+
+  for (const bad of [-1, 3, 1.5, "2", null, true]) {
+    const res = await patch(`/api/todos/${item.id}`, { priority: bad }, token);
+    assert.equal(res.status, 400, `priority=${JSON.stringify(bad)} 应被拒绝`);
+  }
+
+  const createBad = await post("/api/todos", { text: "非法优先级", priority: 9 }, token);
+  assert.equal(createBad.status, 400);
+
+  const list = await (await get("/api/todos", token)).json();
+  assert.equal(list.find((t) => t.id === item.id).priority, 1, "非法请求不应改变原值");
+  assert.ok(!list.some((t) => t.text === "非法优先级"));
+});
+
 test("删除写入 tombstone:增量接口可感知,全量列表不返回", async () => {
   const token = await ensureUser("sync_delete", "secret123");
   const item = (await createTodo(token, "待删除同步")).data;
@@ -533,4 +601,119 @@ test("增量接口需要鉴权,且只返回当前用户的数据", async () => {
 
   const aliceChanges = await (await get("/api/todos?since=0", aliceToken)).json();
   assert.ok(aliceChanges.some((t) => t.id === item.id));
+});
+
+/* ---------- 请求体载荷上限 ---------- */
+
+test("超过请求体上限返回 413 JSON 错误", async () => {
+  const token = await ensureUser("payload_limit", "secret123");
+  // 20KB,超过显式的 16KB 上限(默认 100KB 会放行)
+  const res = await post("/api/todos", { text: "x".repeat(20 * 1024) }, token);
+  assert.equal(res.status, 413);
+  const body = await res.json();
+  assert.equal(body.code, "PAYLOAD_TOO_LARGE");
+});
+
+test("非法 JSON 请求体返回 400 JSON 错误", async () => {
+  const res = await fetch(base + "/api/todos", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{ this is not json",
+  });
+  assert.equal(res.status, 400);
+  const body = await res.json();
+  assert.equal(body.code, "INVALID_JSON");
+});
+
+/* ---------- 单用户待办配额 ---------- */
+
+test("单用户待办达到配额返回 409,删除后释放额度且配额按用户隔离", async () => {
+  const quotaDb = path.join(os.tmpdir(), `todo-quota-${process.pid}-${Date.now()}.db`);
+  const started = await startServer({
+    dbPath: quotaDb,
+    port: 0,
+    staticDir: path.join(__dirname, ".."),
+    maxTodosPerUser: 3,
+  });
+  const qbase = `http://127.0.0.1:${started.port}`;
+  const call = (method, pathname, body, token) => {
+    const headers = {};
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+    if (token) headers.Authorization = "Bearer " + token;
+    return fetch(qbase + pathname, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  };
+
+  try {
+    const reg = await call("POST", "/api/register", {
+      username: "quota",
+      password: "secret123",
+    });
+    const { token } = await reg.json();
+
+    const created = [];
+    for (let i = 0; i < 3; i++) {
+      const res = await call("POST", "/api/todos", { text: `配额任务 ${i}` }, token);
+      assert.equal(res.status, 201);
+      created.push((await res.json()).id);
+    }
+
+    // 第 4 条被配额拒绝,并返回可编程判断的 code 与上限
+    const over = await call("POST", "/api/todos", { text: "超出配额" }, token);
+    assert.equal(over.status, 409);
+    const overBody = await over.json();
+    assert.equal(overBody.code, "TODO_QUOTA_EXCEEDED");
+    assert.equal(overBody.limit, 3);
+
+    // 配额只限制新建:更新已有条目仍然成功
+    const update = await call(
+      "PATCH",
+      "/api/todos/" + created[0],
+      { text: "配额内改名" },
+      token
+    );
+    assert.equal(update.status, 200);
+    assert.equal((await update.json()).text, "配额内改名");
+
+    // 配额按用户隔离:另一个用户仍可创建
+    const otherReg = await call("POST", "/api/register", {
+      username: "quota_other",
+      password: "secret123",
+    });
+    const otherToken = (await otherReg.json()).token;
+    const otherCreate = await call(
+      "POST",
+      "/api/todos",
+      { text: "他人配额独立" },
+      otherToken
+    );
+    assert.equal(otherCreate.status, 201);
+
+    // 删除一条释放额度,可以继续创建;墓碑本身不占配额
+    const delRes = await call("DELETE", "/api/todos/" + created[1], undefined, token);
+    assert.equal(delRes.status, 204);
+    const afterDelete = await call("POST", "/api/todos", { text: "删除后新建" }, token);
+    assert.equal(afterDelete.status, 201);
+
+    // 释放出来的额度已被新条目占回,再次新建仍被拒绝
+    const fullAgain = await call("POST", "/api/todos", { text: "再次超出" }, token);
+    assert.equal(fullAgain.status, 409);
+    assert.equal((await fullAgain.json()).code, "TODO_QUOTA_EXCEEDED");
+
+    // 列表中的数量始终不超过配额(已删除项不出现在全量列表)
+    const list = await (await call("GET", "/api/todos", undefined, token)).json();
+    assert.equal(list.length, 3);
+  } finally {
+    await new Promise((resolve) => started.server.close(resolve));
+    for (const suffix of ["", "-wal", "-shm"]) {
+      try {
+        fs.unlinkSync(quotaDb + suffix);
+      } catch (_) {
+        /* 忽略清理失败 */
+      }
+    }
+  }
 });
