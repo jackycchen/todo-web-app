@@ -512,3 +512,66 @@ test("getPaginationState 非法总数按 0 处理", () => {
   assert.equal(core.getPaginationState(NaN, 20).shown, 0);
   assert.equal(core.getPaginationState(undefined, 20).hasMore, false);
 });
+
+/* ---------- 优先级 ---------- */
+
+test("createTodo/addTodo 默认优先级为「普通」", () => {
+  const next = core.addTodo([], "新任务");
+  assert.equal(next[0].priority, core.PRIORITIES.NORMAL);
+  assert.equal(core.createTodo("直接创建").priority, core.PRIORITIES.NORMAL);
+});
+
+test("toggleTodo / editTodo 保留原有优先级", () => {
+  const todos = [
+    { id: "a", text: "高优先级", completed: false, priority: core.PRIORITIES.HIGH, createdAt: 1 }
+  ];
+
+  const toggled = core.toggleTodo(todos, "a");
+  assert.equal(toggled[0].priority, core.PRIORITIES.HIGH);
+
+  const edited = core.editTodo(todos, "a", "改名");
+  assert.equal(edited[0].priority, core.PRIORITIES.HIGH);
+});
+
+test("setPriority 修改优先级并返回新数组;无效值归一化为普通", () => {
+  const todos = [
+    { id: "a", text: "任务", completed: false, priority: core.PRIORITIES.NORMAL, createdAt: 1 }
+  ];
+
+  const next = core.setPriority(todos, "a", core.PRIORITIES.HIGH);
+  assert.notStrictEqual(next, todos);
+  assert.equal(next[0].priority, core.PRIORITIES.HIGH);
+  assert.equal(todos[0].priority, core.PRIORITIES.NORMAL, "不修改入参");
+
+  // 相同优先级 / 不存在的 id 均返回原引用
+  assert.strictEqual(core.setPriority(next, "a", core.PRIORITIES.HIGH), next);
+  assert.strictEqual(core.setPriority(todos, "no-such-id", core.PRIORITIES.LOW), todos);
+
+  // 非法优先级按普通处理
+  assert.equal(core.setPriority(todos, "a", 99)[0].priority, core.PRIORITIES.NORMAL);
+});
+
+test("sortTodos:优先级从高到低,同级按 createdAt 升序", () => {
+  const todos = [
+    { id: "low", priority: 0, createdAt: 100 },
+    { id: "normal-late", priority: 1, createdAt: 300 },
+    { id: "high", priority: 2, createdAt: 200 },
+    { id: "normal-early", priority: 1, createdAt: 100 }
+  ];
+
+  assert.deepEqual(
+    core.sortTodos(todos).map((t) => t.id),
+    ["high", "normal-early", "normal-late", "low"]
+  );
+  assert.notStrictEqual(core.sortTodos(todos), todos, "返回新数组,不修改入参");
+});
+
+test("sanitizeItems 为缺失/非法 priority 的数据补默认「普通」", () => {
+  const clean = core.sanitizeItems([
+    { id: "a", text: "无优先级" },
+    { id: "b", text: "非法优先级", priority: 7 },
+    { id: "c", text: "高优先级", priority: core.PRIORITIES.HIGH }
+  ]);
+
+  assert.deepEqual(clean.map((t) => t.priority), [1, 1, 2]);
+});

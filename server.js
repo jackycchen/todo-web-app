@@ -14,6 +14,7 @@ const crypto = require("node:crypto");
 const express = require("express");
 const {
   openDb,
+  TodoQuotaExceededError,
   getSessionTtlMs,
   resolveSessionTtlMs,
   DEFAULT_SESSION_TTL_MS,
@@ -23,6 +24,12 @@ const core = require("./todo-core.js");
 
 const DEFAULT_PORT = 3000;
 const SESSION_CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // 每小时
+
+/**
+ * 请求体上限:本应用最大合法载荷是很短的待办文本/凭据,
+ * 显式收紧到 16KB,不再沿用 express.json() 默认的 100KB。
+ */
+const JSON_BODY_LIMIT = "16kb";
 
 const PASSWORD_MIN_LENGTH = 6;
 const USERNAME_MAX_LENGTH = 50;
@@ -46,6 +53,23 @@ function parseTodoText(value) {
     return { error: "待办内容最多 " + TODO_TEXT_MAX_LENGTH + " 个字符" };
   }
   return { text };
+}
+
+/**
+ * 校验优先级:只接受 0(低)/1(普通)/2(高)的整数。
+ * 不接受字符串或 null,避免 "2" 与 2 混用导致排序/同步语义不一致。
+ */
+function parsePriority(value) {
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    (value !== core.PRIORITIES.LOW &&
+      value !== core.PRIORITIES.NORMAL &&
+      value !== core.PRIORITIES.HIGH)
+  ) {
+    return { error: "priority 必须是 0(低)、1(普通)或 2(高)" };
+  }
+  return { priority: value };
 }
 
 /**
@@ -109,7 +133,14 @@ function createApp(options = {}) {
   // 显式传入时使用之,否则交给 openDb 按环境变量/defaultSessionTtlMs 决定
   const sessionTtlMs =
     options.sessionTtlMs !== undefined ? resolveSessionTtlMs(options.sessionTtlMs) : undefined;
-  const store = options.store || openDb(dbPath, sessionTtlMs === undefined ? {} : { sessionTtlMs });
+  const store =
+    options.store ||
+    openDb(dbPath, {
+      ...(sessionTtlMs === undefined ? {} : { sessionTtlMs }),
+      ...(options.maxTodosPerUser === undefined
+        ? {}
+        : { maxTodosPerUser: options.maxTodosPerUser })
+    });
   const staticDir = options.staticDir || __dirname;
   // 可注入时钟,便于测试会话过期而无需真实等待
   const now = typeof options.now === "function" ? options.now : Date.now;
@@ -117,7 +148,7 @@ function createApp(options = {}) {
   const app = express();
   app.locals.store = store;
   app.locals.sessionTtlMs = store.sessionTtlMs || sessionTtlMs;
-  app.use(express.json());
+  app.use(express.json({ limit: JSON_BODY_LIMIT }));
 
   // 从 Bearer token 解析当前用户;过期/无效 token 一并清理
   function auth(req, res, next) {
@@ -216,15 +247,36 @@ function createApp(options = {}) {
     if (parsed.error) {
       return res.status(400).json({ error: parsed.error });
     }
+    // 未提供 priority 时按「普通」创建(与旧数据迁移默认值一致)。
+    let priority = core.DEFAULT_PRIORITY;
+    if (body.priority !== undefined) {
+      const parsedPriority = parsePriority(body.priority);
+      if (parsedPriority.error) {
+        return res.status(400).json({ error: parsedPriority.error });
+      }
+      priority = parsedPriority.priority;
+    }
     // id 与 createdAt 完全由服务端生成:客户端传入的同名字段一律忽略,
     // 避免伪造 id 覆盖已有数据或伪造创建时间。
     const item = {
       id: crypto.randomUUID(),
       text: parsed.text,
       completed: !!body.completed,
+      priority,
       createdAt: now()
     };
-    res.status(201).json(store.insertTodo(req.userId, item));
+    try {
+      res.status(201).json(store.insertTodo(req.userId, item));
+    } catch (err) {
+      if (err instanceof TodoQuotaExceededError) {
+        return res.status(409).json({
+          error: err.message,
+          code: err.code,
+          limit: err.limit
+        });
+      }
+      throw err;
+    }
   });
 
   app.patch("/api/todos/:id", auth, (req, res) => {
@@ -236,6 +288,13 @@ function createApp(options = {}) {
       patch.text = parsed.text;
     }
     if (body.completed !== undefined) patch.completed = !!body.completed;
+    if (body.priority !== undefined) {
+      const parsedPriority = parsePriority(body.priority);
+      if (parsedPriority.error) {
+        return res.status(400).json({ error: parsedPriority.error });
+      }
+      patch.priority = parsedPriority.priority;
+    }
     const updated = store.updateTodo(req.userId, req.params.id, patch);
     if (!updated) return res.status(404).json({ error: "待办不存在" });
     res.json(updated);
@@ -250,12 +309,45 @@ function createApp(options = {}) {
   // ---------- 静态文件(仅托管白名单内的前端资源) ----------
   // 采用白名单而非排除法: 不在 STATIC_ASSETS 中的路径直接 404,
   // express.static 永远看不到它们,后续新增的源码/测试/配置文件默认不暴露。
+  // 不能直接 express.static(__dirname),否则 server.js、lib/、test/、
+  // package.json、.git/、data/ 等敏感文件都可被直接下载。
   app.use((req, res, next) => {
     if (req.method !== "GET" && req.method !== "HEAD") return next();
-    if (req.path === "/" || STATIC_ASSETS.has(req.path.slice(1))) return next();
-    return res.status(404).end();
+    let pathname;
+    try {
+      pathname = decodeURIComponent(req.path);
+    } catch (_) {
+      return res.status(400).end();
+    }
+    // 只允许根级白名单文件; "/" 由 express.static 映射到 index.html。
+    // 子目录、隐藏文件及任何编码/路径穿越变体一律 404。
+    if (pathname !== "/" && !STATIC_ASSETS.has(pathname.slice(1))) {
+      return res.status(404).end();
+    }
+    next();
   });
-  app.use(express.static(staticDir, { index: "index.html", redirect: false }));
+  app.use(express.static(staticDir, { index: "index.html", dotfiles: "deny", redirect: false }));
+
+  // ---------- 统一 JSON 错误响应 ----------
+  // express.json() 在进入路由前解析失败时,默认会返回 HTML 错误页;
+  // 前端统一按 JSON 解析响应,这里把解析器的错误也转成 JSON。
+  app.use((err, req, res, next) => {
+    if (res.headersSent) return next(err);
+    if (err && err.type === "entity.too.large") {
+      return res.status(413).json({
+        error: "请求体过大,最大允许 " + JSON_BODY_LIMIT,
+        code: "PAYLOAD_TOO_LARGE"
+      });
+    }
+    if (err && err.type === "entity.parse.failed") {
+      return res.status(400).json({
+        error: "请求体不是合法的 JSON",
+        code: "INVALID_JSON"
+      });
+    }
+    console.error("未处理的错误:", err);
+    res.status(500).json({ error: "服务器内部错误", code: "INTERNAL_ERROR" });
+  });
 
   return app;
 }
@@ -291,7 +383,12 @@ function startServer(options = {}) {
     options.store ||
     openDb(
       options.dbPath || process.env.TODO_DB_PATH || path.join(__dirname, "data", "todo.db"),
-      options.sessionTtlMs !== undefined ? { sessionTtlMs: options.sessionTtlMs } : {}
+      {
+        ...(options.sessionTtlMs !== undefined ? { sessionTtlMs: options.sessionTtlMs } : {}),
+        ...(options.maxTodosPerUser !== undefined
+          ? { maxTodosPerUser: options.maxTodosPerUser }
+          : {})
+      }
     );
   const app = createApp({ ...options, store });
   // 可注入时钟,便于测试会话过期而无需真实等待
@@ -355,6 +452,7 @@ module.exports = {
   startSessionCleanup,
   hashPassword,
   verifyPassword,
+  JSON_BODY_LIMIT,
   DEFAULT_SESSION_TTL_MS,
   MAX_SESSION_TTL_MS,
   resolveSessionTtlMs
