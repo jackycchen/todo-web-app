@@ -12,6 +12,7 @@ const assert = require("node:assert/strict");
 const os = require("node:os");
 const path = require("node:path");
 const fs = require("node:fs");
+const http = require("node:http");
 const { DatabaseSync } = require("node:sqlite");
 
 const { startServer } = require("../server.js");
@@ -69,6 +70,20 @@ function get(pathname, token) {
   return fetch(base + pathname, { headers });
 }
 
+// 使用 node:http 发送原始请求路径,绕过 fetch 的 URL 规范化,
+// 以便验证服务端自身对编码/路径穿越的处理。
+function rawGet(rawPath) {
+  const { hostname, port } = new URL(base);
+  return new Promise((resolve, reject) => {
+    const req = http.request({ hostname, port, path: rawPath, method: "GET" }, (res) => {
+      res.resume();
+      res.on("end", () => resolve(res.statusCode));
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
 async function register(username, password) {
   const res = await post("/api/register", { username, password });
   const data = await res.json().catch(() => null);
@@ -106,6 +121,50 @@ test("GET / 返回前端页面", async () => {
 test("GET /data 被阻止", async () => {
   const res = await get("/data/todo.db");
   assert.equal(res.status, 404);
+});
+
+test("GET / 返回的前端资源可正常访问", async () => {
+  for (const asset of ["/style.css", "/todo-core.js", "/api.js", "/todo.js"]) {
+    const res = await get(asset);
+    assert.equal(res.status, 200, asset + " 应可访问");
+    assert.notEqual(await res.text(), "");
+  }
+});
+
+test("服务端源码与配置文件不可通过 HTTP 下载", async () => {
+  const forbidden = [
+    "/server.js",
+    "/lib/db.js",
+    "/package.json",
+    "/package-lock.json",
+    "/test/api.test.js",
+    "/.gitignore",
+    "/.git/config",
+    "/README.md",
+  ];
+  for (const asset of forbidden) {
+    const res = await get(asset);
+    assert.equal(res.status, 404, asset + " 不应被暴露");
+  }
+});
+
+test("编码与路径穿越变体无法绕过静态资源白名单", async () => {
+  const attacks = [
+    "/%73erver.js", // %73 = s
+    "/%73%65%72%76%65%72%2E%6A%73", // 全编码 "server.js"
+    "/lib%2Fdb.js",
+    "/%2e%2e/server.js",
+    "/..%2fserver.js",
+    "/server%2Ejs",
+    "/%2e%2e%2fpackage.json",
+    "/index.html/../server.js",
+    "//server.js",
+    "/./server.js",
+  ];
+  for (const asset of attacks) {
+    const status = await rawGet(asset);
+    assert.equal(status, 404, asset + " 不应被暴露");
+  }
 });
 
 /* ---------- 注册 ---------- */

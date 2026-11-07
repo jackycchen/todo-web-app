@@ -250,12 +250,24 @@ function createApp(options = {}) {
   // ---------- 静态文件(仅托管白名单内的前端资源) ----------
   // 采用白名单而非排除法: 不在 STATIC_ASSETS 中的路径直接 404,
   // express.static 永远看不到它们,后续新增的源码/测试/配置文件默认不暴露。
+  // 不能直接 express.static(__dirname),否则 server.js、lib/、test/、
+  // package.json、.git/、data/ 等敏感文件都可被直接下载。
   app.use((req, res, next) => {
     if (req.method !== "GET" && req.method !== "HEAD") return next();
-    if (req.path === "/" || STATIC_ASSETS.has(req.path.slice(1))) return next();
-    return res.status(404).end();
+    let pathname;
+    try {
+      pathname = decodeURIComponent(req.path);
+    } catch (_) {
+      return res.status(400).end();
+    }
+    // 只允许根级白名单文件; "/" 由 express.static 映射到 index.html。
+    // 子目录、隐藏文件及任何编码/路径穿越变体一律 404。
+    if (pathname !== "/" && !STATIC_ASSETS.has(pathname.slice(1))) {
+      return res.status(404).end();
+    }
+    next();
   });
-  app.use(express.static(staticDir, { index: "index.html", redirect: false }));
+  app.use(express.static(staticDir, { index: "index.html", dotfiles: "deny", redirect: false }));
 
   return app;
 }
