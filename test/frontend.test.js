@@ -848,13 +848,13 @@ test("双击编辑:轮询整表重绘后仍保留编辑态与未提交输入", a
 /* ---------- 优先级与排序 ---------- */
 
 test("优先级:前端修改后立即重排,刷新后仍然生效", async () => {
-  // 注册独立用户 henry,避免受前序用例数据影响
+  // 注册独立用户 henry2,避免与其他用例已注册的用户重名
   clickTab(1);
-  fillInput("register-username", "henry");
+  fillInput("register-username", "henry2");
   fillInput("register-password", "secret123");
   submitForm("register-form");
   await flush();
-  assert.equal(getElement("current-user").textContent, "henry");
+  assert.equal(getElement("current-user").textContent, "henry2");
 
   fillInput("todo-input", "普通 A");
   submitForm("todo-form");
@@ -896,7 +896,7 @@ test("优先级:前端修改后立即重排,刷新后仍然生效", async () => 
   getElement("logout-btn").handlers.click[0]();
   await flush();
   clickTab(0);
-  fillInput("login-username", "henry");
+  fillInput("login-username", "henry2");
   fillInput("login-password", "secret123");
   submitForm("login-form");
   await flush();
@@ -909,7 +909,7 @@ test("优先级:前端修改后立即重排,刷新后仍然生效", async () => 
 });
 
 test("保存后按服务端确认的 createdAt 重排,避免刷新前后顺序跳变", async () => {
-  // 上一个用例结束时登录的是 henry,先登出并注册独立用户
+  // 上一个用例结束时登录的是 henry2,先登出并注册独立用户
   getElement("logout-btn").handlers.click[0]();
   await flush();
   clickTab(1);
