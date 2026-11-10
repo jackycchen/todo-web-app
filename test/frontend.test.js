@@ -274,6 +274,15 @@ function clickDelete(index) {
   list.handlers.click[0]({ target: del });
 }
 
+function changePriority(index, priority) {
+  const list = getElement("todo-list");
+  const li = list.children[index];
+  const select = li.children[3]; // checkbox / text / delete / priority
+  select.value = String(priority);
+  select.closest = () => li;
+  list.handlers.change[0]({ target: select });
+}
+
 function renderedItems() {
   return getElement("todo-list").children.map((li) => ({
     text: li.children[1].textContent,
@@ -728,6 +737,8 @@ test("双击编辑:内容未改动或为空白时失焦不产生写入", async (
   assert.deepEqual(serverList.map((t) => t.text), ["原文本"]);
 });
 
+/* ---------- 双击编辑(输入法与轮询) ---------- */
+
 test("双击编辑:输入法组合期回车不提交,确认候选词后再回车才保存", async () => {
   await registerAndSeed("ivy", ["输入法任务"]);
 
@@ -832,4 +843,116 @@ test("双击编辑:轮询整表重绘后仍保留编辑态与未提交输入", a
   ).json();
   assert.ok(after.some((t) => t.text === "尚未提交的输入"), "编辑内容应写入服务端");
   assert.ok(!after.some((t) => t.text === "编辑中的任务"));
+});
+
+/* ---------- 优先级与排序 ---------- */
+
+test("优先级:前端修改后立即重排,刷新后仍然生效", async () => {
+  // 注册独立用户 henry2,避免与其他用例已注册的用户重名
+  clickTab(1);
+  fillInput("register-username", "henry2");
+  fillInput("register-password", "secret123");
+  submitForm("register-form");
+  await flush();
+  assert.equal(getElement("current-user").textContent, "henry2");
+
+  fillInput("todo-input", "普通 A");
+  submitForm("todo-form");
+  await flush();
+  fillInput("todo-input", "普通 B");
+  submitForm("todo-form");
+  await flush();
+
+  assert.deepEqual(
+    renderedItems().map((i) => i.text),
+    ["普通 A", "普通 B"],
+    "默认同为「普通」时按创建顺序"
+  );
+
+  // 把第二条设为「高」:本地立即排到最前
+  changePriority(1, 2);
+  await new Promise((r) => setTimeout(r, 300));
+
+  assert.deepEqual(
+    renderedItems().map((i) => i.text),
+    ["普通 B", "普通 A"],
+    "高优先级立即排到最前"
+  );
+
+  // 服务端已持久化优先级,并按新顺序返回
+  const token = window.localStorage.getItem("todo-app.token");
+  const serverList = await (
+    await fetch(`${base}/api/todos`, { headers: { Authorization: "Bearer " + token } })
+  ).json();
+  assert.deepEqual(
+    serverList.map((t) => ({ text: t.text, priority: t.priority })),
+    [
+      { text: "普通 B", priority: 2 },
+      { text: "普通 A", priority: 1 }
+    ]
+  );
+
+  // 模拟刷新页面:登出后重新登录,顺序仍由服务端决定
+  getElement("logout-btn").handlers.click[0]();
+  await flush();
+  clickTab(0);
+  fillInput("login-username", "henry2");
+  fillInput("login-password", "secret123");
+  submitForm("login-form");
+  await flush();
+
+  assert.deepEqual(
+    renderedItems().map((i) => i.text),
+    ["普通 B", "普通 A"],
+    "刷新后优先级排序仍然生效"
+  );
+});
+
+test("保存后按服务端确认的 createdAt 重排,避免刷新前后顺序跳变", async () => {
+  // 上一个用例结束时登录的是 henry2,先登出并注册独立用户
+  getElement("logout-btn").handlers.click[0]();
+  await flush();
+  clickTab(1);
+  fillInput("register-username", "ivan");
+  fillInput("register-password", "secret123");
+  submitForm("register-form");
+  await flush();
+
+  const realFetch = global.fetch;
+  let createIndex = 0;
+  // 模拟服务端处理顺序与本地提交顺序相反:先提交的拿到更大的 createdAt。
+  // 客户端必须以服务端确认值为准重排,否则刷新后会看到另一种顺序。
+  const serverCreatedAt = [2000, 1000];
+  global.fetch = function (url, opts) {
+    return realFetch(url, opts).then(function (res) {
+      const isCreate =
+        opts && opts.method === "POST" && /\/api\/todos$/.test(String(url));
+      if (!isCreate) return res;
+      return res.json().then(function (data) {
+        const createdAt = serverCreatedAt[createIndex % serverCreatedAt.length];
+        createIndex += 1;
+        return new Response(
+          JSON.stringify(Object.assign({}, data, { createdAt: createdAt })),
+          { status: res.status, headers: { "Content-Type": "application/json" } }
+        );
+      });
+    });
+  };
+
+  try {
+    fillInput("todo-input", "先创建的");
+    submitForm("todo-form");
+    await flush();
+    fillInput("todo-input", "后创建的");
+    submitForm("todo-form");
+    await flush();
+
+    assert.deepEqual(
+      renderedItems().map((i) => i.text),
+      ["后创建的", "先创建的"],
+      "本地顺序应与服务端确认的 createdAt 排序一致"
+    );
+  } finally {
+    global.fetch = realFetch;
+  }
 });

@@ -62,11 +62,13 @@ test("旧库迁移:新增 updated_at/deleted 列并回填 updatedAt", () => {
     assert.equal(items[0].createdAt, 1234567890123);
     assert.equal(items[0].updatedAt, 1234567890123, "updatedAt 应回填为 created_at");
     assert.equal(items[0].deleted, false);
+    assert.equal(items[0].priority, 1, "旧数据迁移后优先级应默认「普通」");
 
     // 旧数据也要能被增量接口拉到
     const changes = store.getChangedTodos(1, 0);
     assert.equal(changes.length, 1);
     assert.equal(changes[0].id, "old-todo");
+    assert.equal(changes[0].priority, 1);
 
     // 迁移后写入正常,且 updatedAt 使用服务端毫秒时间戳
     const inserted = store.insertTodo(1, {
@@ -77,6 +79,7 @@ test("旧库迁移:新增 updated_at/deleted 列并回填 updatedAt", () => {
     });
     assert.ok(Number.isSafeInteger(inserted.updatedAt));
     assert.ok(inserted.updatedAt > inserted.createdAt);
+    assert.equal(inserted.priority, 1, "未指定优先级时默认「普通」");
   } finally {
     store.close();
     cleanup(dbPath);
