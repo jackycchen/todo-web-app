@@ -222,23 +222,55 @@ function createApp(options = {}) {
 
   /**
    * 列出待办。
-   *  - 不带 since: 返回全部未删除待办(初始加载)
-   *  - 带 since  : 返回 updatedAt 严格大于 since 的变更(含删除墓碑 deleted:true)
+   *  - 不带 q/since: 返回全部未删除待办(初始加载)
+   *  - 带 q       : 返回 text 包含关键字的未删除待办(英文大小写不敏感)
+   *  - 带 since   : 返回 updatedAt 严格大于 since 的变更(含删除墓碑 deleted:true)
+   *
+   * q 与 since 互斥,同时出现返回 400:q 用于全量检索,since 用于增量同步。
+   * since 模式需要返回墓碑和改名后的变更,叠加关键字过滤会让客户端漏掉
+   * 已不再命中关键字的旧结果,破坏同步语义。
+   * 空关键字或纯空白等价于不传 q;超过 TODO_TEXT_MAX_LENGTH 的关键字返回 400
+   * (不截断,避免截断后产生假命中)。
    * since 必须是毫秒时间戳(非负安全整数)。
    */
   app.get("/api/todos", auth, (req, res) => {
+    const rawKeyword = req.query.q;
+    let keyword; // undefined 表示不检索
+    if (rawKeyword !== undefined) {
+      // 重复 q 会被解析成数组;拒绝而非任取一个,避免检索语义歧义
+      if (typeof rawKeyword !== "string") {
+        return res.status(400).json({ error: "q 必须是单个字符串" });
+      }
+      const trimmed = rawKeyword.trim();
+      if (trimmed.length > TODO_TEXT_MAX_LENGTH) {
+        return res.status(400).json({
+          error: "搜索关键字最多 " + TODO_TEXT_MAX_LENGTH + " 个字符"
+        });
+      }
+      if (trimmed) keyword = trimmed;
+    }
+
     const rawSince = req.query.since;
-    if (rawSince === undefined) {
-      return res.json(store.getTodos(req.userId));
+    if (rawSince !== undefined) {
+      if (keyword !== undefined) {
+        return res.status(400).json({
+          error: "q 与 since 不能同时使用:q 用于全量检索,since 用于增量同步"
+        });
+      }
+      if (typeof rawSince !== "string" || !/^\d+$/.test(rawSince)) {
+        return res.status(400).json({ error: "since 必须是毫秒时间戳(非负整数)" });
+      }
+      const since = Number(rawSince);
+      if (!Number.isSafeInteger(since)) {
+        return res.status(400).json({ error: "since 必须是毫秒时间戳(非负整数)" });
+      }
+      return res.json(store.getChangedTodos(req.userId, since));
     }
-    if (typeof rawSince !== "string" || !/^\d+$/.test(rawSince)) {
-      return res.status(400).json({ error: "since 必须是毫秒时间戳(非负整数)" });
+
+    if (keyword !== undefined) {
+      return res.json(store.searchTodos(req.userId, keyword));
     }
-    const since = Number(rawSince);
-    if (!Number.isSafeInteger(since)) {
-      return res.status(400).json({ error: "since 必须是毫秒时间戳(非负整数)" });
-    }
-    res.json(store.getChangedTodos(req.userId, since));
+    res.json(store.getTodos(req.userId));
   });
 
   app.post("/api/todos", auth, (req, res) => {

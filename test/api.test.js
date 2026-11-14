@@ -717,3 +717,122 @@ test("单用户待办达到配额返回 409,删除后释放额度且配额按用
     }
   }
 });
+
+/* ---------- 关键字搜索(GET /api/todos?q=) ---------- */
+
+test("q 只返回文本包含关键字的未删除待办", async () => {
+  const token = await ensureUser("search_basic", "secret123");
+  const milk = await createTodo(token, "buy milk");
+  await createTodo(token, "call mom");
+  await createTodo(token, "BUY bread");
+  await createTodo(token, "read book");
+
+  let res = await get("/api/todos?q=milk", token);
+  assert.equal(res.status, 200);
+  let list = await res.json();
+  assert.deepEqual(list.map((item) => item.text), ["buy milk"]);
+
+  res = await get("/api/todos?q=buy", token);
+  list = await res.json();
+  // 大小写不敏感命中两条,并保持既有的 priority DESC, created_at ASC 顺序
+  assert.deepEqual(list.map((item) => item.text), ["buy milk", "BUY bread"]);
+
+  // 删除后不再被检索命中
+  const removed = await del("/api/todos/" + encodeURIComponent(milk.data.id), token);
+  assert.equal(removed.status, 204);
+  res = await get("/api/todos?q=milk", token);
+  assert.deepEqual(await res.json(), []);
+});
+
+test("q 英文大小写不敏感:搜 Buy 命中 buy milk", async () => {
+  const token = await ensureUser("search_case", "secret123");
+  await createTodo(token, "buy milk");
+  await createTodo(token, "MILK tea");
+
+  const mixed = await (await get("/api/todos?q=Buy", token)).json();
+  assert.deepEqual(mixed.map((item) => item.text), ["buy milk"]);
+
+  const upper = await (await get("/api/todos?q=MiLk", token)).json();
+  assert.deepEqual(upper.map((item) => item.text), ["buy milk", "MILK tea"]);
+});
+
+test("空关键字或纯空白等价于不搜索", async () => {
+  const token = await ensureUser("search_empty", "secret123");
+  await createTodo(token, "alpha one");
+  await createTodo(token, "beta two");
+
+  const all = await (await get("/api/todos", token)).json();
+  for (const pathname of ["/api/todos?q=", "/api/todos?q=%20%20%20"]) {
+    const res = await get(pathname, token);
+    assert.equal(res.status, 200, pathname + " 不应报错");
+    assert.deepEqual(await res.json(), all, pathname + " 应等价于不搜索");
+  }
+});
+
+test("q 按 userId 隔离,不会跨用户命中", async () => {
+  const alice = await ensureUser("search_iso_alice", "secret123");
+  const bob = await ensureUser("search_iso_bob", "secret123");
+  await createTodo(alice, "shared keyword alice");
+  await createTodo(bob, "shared keyword bob");
+
+  const aliceList = await (
+    await get("/api/todos?q=" + encodeURIComponent("shared keyword"), alice)
+  ).json();
+  const bobList = await (
+    await get("/api/todos?q=" + encodeURIComponent("shared keyword"), bob)
+  ).json();
+  assert.deepEqual(aliceList.map((item) => item.text), ["shared keyword alice"]);
+  assert.deepEqual(bobList.map((item) => item.text), ["shared keyword bob"]);
+});
+
+test("q 超过 200 字符返回 400,恰好 200 字符可用", async () => {
+  const token = await ensureUser("search_long", "secret123");
+
+  const tooLong = await get("/api/todos?q=" + encodeURIComponent("a".repeat(201)), token);
+  assert.equal(tooLong.status, 400);
+
+  const atLimit = await get("/api/todos?q=" + encodeURIComponent("a".repeat(200)), token);
+  assert.equal(atLimit.status, 200);
+});
+
+test("q 与 since 同时出现返回 400,空白 q 不触发冲突", async () => {
+  const token = await ensureUser("search_since", "secret123");
+  const item = await createTodo(token, "since search item");
+
+  const conflict = await get(
+    "/api/todos?q=since&since=" + item.data.updatedAt,
+    token
+  );
+  assert.equal(conflict.status, 400);
+
+  // 纯空白 q 等价于未传 q,因此仍按 since 增量语义返回
+  const incremental = await get("/api/todos?q=%20%20&since=0", token);
+  assert.equal(incremental.status, 200);
+  const changes = await incremental.json();
+  assert.equal(changes.length, 1);
+  assert.equal(changes[0].id, item.data.id);
+});
+
+test("q 中的 % 与 _ 按字面量匹配,不当作通配符", async () => {
+  const token = await ensureUser("search_literal", "secret123");
+  await createTodo(token, "50% off");
+  await createTodo(token, "50X off");
+  await createTodo(token, "a_b");
+  await createTodo(token, "axb");
+
+  const percent = await (
+    await get("/api/todos?q=" + encodeURIComponent("50%"), token)
+  ).json();
+  assert.deepEqual(percent.map((item) => item.text), ["50% off"]);
+
+  const underscore = await (
+    await get("/api/todos?q=" + encodeURIComponent("a_b"), token)
+  ).json();
+  assert.deepEqual(underscore.map((item) => item.text), ["a_b"]);
+});
+
+test("重复 q 参数(数组)返回 400", async () => {
+  const token = await ensureUser("search_dup", "secret123");
+  const res = await get("/api/todos?q=a&q=b", token);
+  assert.equal(res.status, 400);
+});
