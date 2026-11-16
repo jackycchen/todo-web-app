@@ -43,7 +43,15 @@ function get(pathname) {
 }
 
 test("GET / 与前端静态资源仍返回 200", async () => {
-  const paths = ["/", "/index.html", "/style.css", "/todo-core.js", "/api.js", "/todo.js"];
+  const paths = [
+    "/",
+    "/index.html",
+    "/theme-init.js",
+    "/style.css",
+    "/todo-core.js",
+    "/api.js",
+    "/todo.js",
+  ];
   for (const pathname of paths) {
     const res = await get(pathname);
     assert.equal(res.status, 200, `${pathname} 应仍可访问`);

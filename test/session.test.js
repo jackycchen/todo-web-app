@@ -93,7 +93,7 @@ test("过期会话返回 401,且鉴权时惰性删除该行;重复登出保持�
     const reg = await fetch(base + "/api/register", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: "expireduser", password: "secret123" })
+      body: JSON.stringify({ username: "expireduser", password: "secret1234567" })
     });
     assert.equal(reg.status, 201);
     const { token } = await reg.json();
@@ -411,7 +411,7 @@ function get(pathname, token) {
 }
 
 test("HTTP:新会话返回 expiresAt,TTL 内可访问", async () => {
-  const res = await post("/api/register", { username: "exp_api", password: "secret123" });
+  const res = await post("/api/register", { username: "exp_api", password: "secret1234567" });
   assert.equal(res.status, 201);
   const data = await res.json();
   assert.ok(data.token);
@@ -424,7 +424,7 @@ test("HTTP:新会话返回 expiresAt,TTL 内可访问", async () => {
 
 test("HTTP:会话到期后返回 401 且该会话被清除", async () => {
   currentTime = 5_000_000;
-  const res = await post("/api/register", { username: "exp_http", password: "secret123" });
+  const res = await post("/api/register", { username: "exp_http", password: "secret1234567" });
   const { token, expiresAt } = await res.json();
   currentTime = expiresAt - 1;
 
@@ -446,7 +446,7 @@ test("HTTP:会话到期后返回 401 且该会话被清除", async () => {
 
 test("HTTP:未被访问的过期会话也会被定期清理任务删除", async () => {
   currentTime = 6_000_000;
-  const res = await post("/api/register", { username: "exp_sweep", password: "secret123" });
+  const res = await post("/api/register", { username: "exp_sweep", password: "secret1234567" });
   const { token, expiresAt } = await res.json();
   assert.equal(sessionCount(dbPath) > 0, true);
 

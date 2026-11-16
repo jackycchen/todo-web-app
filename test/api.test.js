@@ -107,7 +107,10 @@ async function createTodo(token, text) {
 test("GET /api/health 返回 ok", async () => {
   const res = await get("/api/health");
   assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), { ok: true });
+  // 返回体现在还包含 db / uptimeMs,但 ok 语义不变(数据库可用时为 true)
+  const body = await res.json();
+  assert.equal(body.ok, true);
+  assert.equal(body.db, "ok");
 });
 
 test("GET / 返回前端页面", async () => {
@@ -170,14 +173,14 @@ test("编码与路径穿越变体无法绕过静态资源白名单", async () =>
 /* ---------- 注册 ---------- */
 
 test("注册成功返回 token 与用户名", async () => {
-  const { status, data } = await register("alice", "secret123");
+  const { status, data } = await register("alice", "secret1234567");
   assert.equal(status, 201);
   assert.equal(data.username, "alice");
   assert.ok(typeof data.token === "string" && data.token.length >= 32);
 });
 
 test("重复用户名注册返回 409", async () => {
-  const { status } = await register("alice", "secret123");
+  const { status } = await register("alice", "secret1234567");
   assert.equal(status, 409);
 });
 
@@ -187,7 +190,7 @@ test("密码过短注册返回 400", async () => {
 });
 
 test("空用户名注册返回 400", async () => {
-  const { status } = await register("  ", "secret123");
+  const { status } = await register("  ", "secret1234567");
   assert.equal(status, 400);
 });
 
@@ -197,14 +200,14 @@ test("密码不以明文存储", async () => {
   db.close();
   assert.ok(row, "应存在 alice 用户");
   assert.match(row.password_hash, /^scrypt\$/);
-  assert.notEqual(row.password_hash, "secret123");
-  assert.ok(!row.password_hash.includes("secret123"));
+  assert.notEqual(row.password_hash, "secret1234567");
+  assert.ok(!row.password_hash.includes("secret1234567"));
 });
 
 /* ---------- 登录 / 会话 ---------- */
 
 test("登录成功返回新 token", async () => {
-  const { status, data } = await login("alice", "secret123");
+  const { status, data } = await login("alice", "secret1234567");
   assert.equal(status, 200);
   assert.equal(data.username, "alice");
   assert.ok(typeof data.token === "string" && data.token.length >= 32);
@@ -221,14 +224,14 @@ test("未登录访问 /api/me 返回 401", async () => {
 });
 
 test("带 token 访问 /api/me 返回用户名", async () => {
-  const { data } = await login("alice", "secret123");
+  const { data } = await login("alice", "secret1234567");
   const res = await get("/api/me", data.token);
   assert.equal(res.status, 200);
   assert.equal((await res.json()).username, "alice");
 });
 
 test("登出后 token 失效", async () => {
-  const { data } = await login("alice", "secret123");
+  const { data } = await login("alice", "secret1234567");
   const res = await post("/api/logout", {}, data.token);
   assert.equal(res.status, 204);
   const me = await get("/api/me", data.token);
@@ -238,7 +241,7 @@ test("登出后 token 失效", async () => {
 /* ---------- 待办 CRUD ---------- */
 
 test("创建待办并列出", async () => {
-  const { data: loginData } = await login("alice", "secret123");
+  const { data: loginData } = await login("alice", "secret1234567");
   const created = await createTodo(loginData.token, "写代码");
   assert.equal(created.status, 201);
   assert.equal(created.data.text, "写代码");
@@ -252,26 +255,26 @@ test("创建待办并列出", async () => {
 });
 
 test("空白内容创建返回 400", async () => {
-  const { data } = await login("alice", "secret123");
+  const { data } = await login("alice", "secret1234567");
   const res = await post("/api/todos", { text: "   " }, data.token);
   assert.equal(res.status, 400);
 });
 
 test("待办内容超过 200 字符返回 400", async () => {
-  const { data } = await login("alice", "secret123");
+  const { data } = await login("alice", "secret1234567");
   const res = await post("/api/todos", { text: "a".repeat(201) }, data.token);
   assert.equal(res.status, 400);
 });
 
 test("待办内容恰好 200 字符可以创建(忽略首尾空白)", async () => {
-  const { data } = await login("alice", "secret123");
+  const { data } = await login("alice", "secret1234567");
   const res = await post("/api/todos", { text: "  " + "a".repeat(200) + "  " }, data.token);
   assert.equal(res.status, 201);
   assert.equal((await res.json()).text.length, 200);
 });
 
 test("修改待办内容超过 200 字符返回 400 且不生效", async () => {
-  const { data } = await login("alice", "secret123");
+  const { data } = await login("alice", "secret1234567");
   const created = await createTodo(data.token, "长度校验目标");
 
   const res = await patch(
@@ -286,7 +289,7 @@ test("修改待办内容超过 200 字符返回 400 且不生效", async () => {
 });
 
 test("客户端传入的 id 与 createdAt 会被忽略", async () => {
-  const { data } = await login("alice", "secret123");
+  const { data } = await login("alice", "secret1234567");
   const forgedId = "forged-id";
   const forgedCreatedAt = 1;
 
@@ -303,7 +306,7 @@ test("客户端传入的 id 与 createdAt 会被忽略", async () => {
 });
 
 test("伪造已存在待办的 id 不会覆盖原数据", async () => {
-  const { data } = await login("alice", "secret123");
+  const { data } = await login("alice", "secret1234567");
   const original = (await createTodo(data.token, "原始内容")).data;
 
   const res = await post(
@@ -321,7 +324,7 @@ test("伪造已存在待办的 id 不会覆盖原数据", async () => {
 });
 
 test("切换完成状态并改名", async () => {
-  const { data } = await login("alice", "secret123");
+  const { data } = await login("alice", "secret1234567");
   const created = await createTodo(data.token, "待切换");
   const toggled = await patch("/api/todos/" + created.data.id, { completed: true }, data.token);
   assert.equal(toggled.status, 200);
@@ -336,7 +339,7 @@ test("切换完成状态并改名", async () => {
 });
 
 test("删除待办后清单为空", async () => {
-  const { data } = await login("alice", "secret123");
+  const { data } = await login("alice", "secret1234567");
   const created = await createTodo(data.token, "待删除");
   const res = await del("/api/todos/" + created.data.id, data.token);
   assert.equal(res.status, 204);
@@ -345,7 +348,7 @@ test("删除待办后清单为空", async () => {
 });
 
 test("操作不存在的待办返回 404", async () => {
-  const { data } = await login("alice", "secret123");
+  const { data } = await login("alice", "secret1234567");
   const patchRes = await patch("/api/todos/no-such-id", { completed: true }, data.token);
   assert.equal(patchRes.status, 404);
   const delRes = await del("/api/todos/no-such-id", data.token);
@@ -355,9 +358,9 @@ test("操作不存在的待办返回 404", async () => {
 /* ---------- 多用户隔离 ---------- */
 
 test("两个用户数据相互隔离", async () => {
-  const aliceLogin = await login("alice", "secret123");
-  const bobReg = await register("bob", "secret456");
-  const bobLogin = await login("bob", "secret456");
+  const aliceLogin = await login("alice", "secret1234567");
+  const bobReg = await register("bob", "secret4567890");
+  const bobLogin = await login("bob", "secret4567890");
 
   await createTodo(aliceLogin.data.token, "alice 的私密待办");
   await createTodo(bobLogin.data.token, "bob 的私密待办");
@@ -373,8 +376,8 @@ test("两个用户数据相互隔离", async () => {
 });
 
 test("用户不能修改或删除他人待办", async () => {
-  const aliceLogin = await login("alice", "secret123");
-  const bobLogin = await login("bob", "secret456");
+  const aliceLogin = await login("alice", "secret1234567");
+  const bobLogin = await login("bob", "secret4567890");
   const aliceItem = (await createTodo(aliceLogin.data.token, "alice 专属")).data;
 
   const patchRes = await patch(`/api/todos/${aliceItem.id}`, { completed: true }, bobLogin.data.token);
@@ -390,11 +393,11 @@ test("用户不能修改或删除他人待办", async () => {
 
 test("同一用户在不同浏览器/会话中看到相同数据", async () => {
   // 会话 A:浏览器 1 登录
-  const sessionA = await login("alice", "secret123");
+  const sessionA = await login("alice", "secret1234567");
   await createTodo(sessionA.data.token, "跨会话任务");
 
   // 会话 B:浏览器 2 重新登录,应能看到会话 A 添加的数据
-  const sessionB = await login("alice", "secret123");
+  const sessionB = await login("alice", "secret1234567");
   assert.notEqual(sessionA.data.token, sessionB.data.token);
 
   const listB = (await (await get("/api/todos", sessionB.data.token)).json());
@@ -411,7 +414,7 @@ async function ensureUser(username, password) {
 }
 
 test("新增与修改都会刷新 updatedAt(毫秒时间戳)", async () => {
-  const token = await ensureUser("sync_updated", "secret123");
+  const token = await ensureUser("sync_updated", "secret1234567");
   const created = await createTodo(token, "updatedAt 任务");
   assert.ok(Number.isSafeInteger(created.data.updatedAt), "updatedAt 应为毫秒整数");
   assert.ok(created.data.updatedAt >= created.data.createdAt);
@@ -435,7 +438,7 @@ test("新增与修改都会刷新 updatedAt(毫秒时间戳)", async () => {
 });
 
 test("GET /api/todos?since= 只返回该时间之后发生变更的待办", async () => {
-  const token = await ensureUser("sync_since", "secret123");
+  const token = await ensureUser("sync_since", "secret1234567");
   const first = await createTodo(token, "since 第一条");
   const second = await createTodo(token, "since 第二条");
 
@@ -458,7 +461,7 @@ test("GET /api/todos?since= 只返回该时间之后发生变更的待办", asyn
 });
 
 test("since 参数非法时返回 400", async () => {
-  const token = await ensureUser("sync_since", "secret123");
+  const token = await ensureUser("sync_since", "secret1234567");
   for (const bad of ["-1", "1.5", "abc", "", "1e3"]) {
     const res = await get(`/api/todos?since=${encodeURIComponent(bad)}`, token);
     assert.equal(res.status, 400, `since=${JSON.stringify(bad)} 应被拒绝`);
@@ -468,7 +471,7 @@ test("since 参数非法时返回 400", async () => {
 /* ---------- 优先级 ---------- */
 
 test("全量列表按优先级排序:高在前,同级按创建时间升序", async () => {
-  const token = await ensureUser("priority_order", "secret123");
+  const token = await ensureUser("priority_order", "secret1234567");
 
   const normal1 = (await createTodo(token, "普通一")).data;
   await new Promise((r) => setTimeout(r, 2));
@@ -497,7 +500,7 @@ test("全量列表按优先级排序:高在前,同级按创建时间升序", asy
 });
 
 test("修改优先级会刷新 updatedAt,并能通过 since 增量拉到", async () => {
-  const token = await ensureUser("priority_since", "secret123");
+  const token = await ensureUser("priority_since", "secret1234567");
   const item = (await createTodo(token, "优先级同步")).data;
   assert.equal(item.priority, 1);
 
@@ -517,7 +520,7 @@ test("修改优先级会刷新 updatedAt,并能通过 since 增量拉到", async
 });
 
 test("非法 priority 返回 400 且不改变数据", async () => {
-  const token = await ensureUser("priority_invalid", "secret123");
+  const token = await ensureUser("priority_invalid", "secret1234567");
   const item = (await createTodo(token, "优先级校验")).data;
 
   for (const bad of [-1, 3, 1.5, "2", null, true]) {
@@ -534,7 +537,7 @@ test("非法 priority 返回 400 且不改变数据", async () => {
 });
 
 test("删除写入 tombstone:增量接口可感知,全量列表不返回", async () => {
-  const token = await ensureUser("sync_delete", "secret123");
+  const token = await ensureUser("sync_delete", "secret1234567");
   const item = (await createTodo(token, "待删除同步")).data;
   const cursor = item.updatedAt;
 
@@ -556,8 +559,8 @@ test("删除写入 tombstone:增量接口可感知,全量列表不返回", async
 });
 
 test("last-write-wins:后写的修改胜出,两端增量同步一致", async () => {
-  const tokenA = await ensureUser("sync_lww", "secret123");
-  const sessionB = await login("sync_lww", "secret123");
+  const tokenA = await ensureUser("sync_lww", "secret1234567");
+  const sessionB = await login("sync_lww", "secret1234567");
   const tokenB = sessionB.data.token;
   assert.notEqual(tokenA, tokenB, "模拟两个浏览器会话");
 
@@ -592,8 +595,8 @@ test("增量接口需要鉴权,且只返回当前用户的数据", async () => {
   const noAuth = await get("/api/todos?since=0");
   assert.equal(noAuth.status, 401);
 
-  const aliceToken = await ensureUser("sync_iso_alice", "secret123");
-  const bobToken = await ensureUser("sync_iso_bob", "secret123");
+  const aliceToken = await ensureUser("sync_iso_alice", "secret1234567");
+  const bobToken = await ensureUser("sync_iso_bob", "secret1234567");
   const item = (await createTodo(aliceToken, "alice 的增量数据")).data;
 
   const bobChanges = await (await get("/api/todos?since=0", bobToken)).json();
@@ -606,7 +609,7 @@ test("增量接口需要鉴权,且只返回当前用户的数据", async () => {
 /* ---------- 请求体载荷上限 ---------- */
 
 test("超过请求体上限返回 413 JSON 错误", async () => {
-  const token = await ensureUser("payload_limit", "secret123");
+  const token = await ensureUser("payload_limit", "secret1234567");
   // 20KB,超过显式的 16KB 上限(默认 100KB 会放行)
   const res = await post("/api/todos", { text: "x".repeat(20 * 1024) }, token);
   assert.equal(res.status, 413);
@@ -650,7 +653,7 @@ test("单用户待办达到配额返回 409,删除后释放额度且配额按用
   try {
     const reg = await call("POST", "/api/register", {
       username: "quota",
-      password: "secret123",
+      password: "secret1234567",
     });
     const { token } = await reg.json();
 
@@ -681,7 +684,7 @@ test("单用户待办达到配额返回 409,删除后释放额度且配额按用
     // 配额按用户隔离:另一个用户仍可创建
     const otherReg = await call("POST", "/api/register", {
       username: "quota_other",
-      password: "secret123",
+      password: "secret1234567",
     });
     const otherToken = (await otherReg.json()).token;
     const otherCreate = await call(
