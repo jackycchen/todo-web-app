@@ -724,7 +724,7 @@ test("单用户待办达到配额返回 409,删除后释放额度且配额按用
 /* ---------- 关键字搜索(GET /api/todos?q=) ---------- */
 
 test("q 只返回文本包含关键字的未删除待办", async () => {
-  const token = await ensureUser("search_basic", "secret123");
+  const token = await ensureUser("search_basic", "secret1234567");
   const milk = await createTodo(token, "buy milk");
   await createTodo(token, "call mom");
   await createTodo(token, "BUY bread");
@@ -748,7 +748,7 @@ test("q 只返回文本包含关键字的未删除待办", async () => {
 });
 
 test("q 英文大小写不敏感:搜 Buy 命中 buy milk", async () => {
-  const token = await ensureUser("search_case", "secret123");
+  const token = await ensureUser("search_case", "secret1234567");
   await createTodo(token, "buy milk");
   await createTodo(token, "MILK tea");
 
@@ -760,7 +760,7 @@ test("q 英文大小写不敏感:搜 Buy 命中 buy milk", async () => {
 });
 
 test("空关键字或纯空白等价于不搜索", async () => {
-  const token = await ensureUser("search_empty", "secret123");
+  const token = await ensureUser("search_empty", "secret1234567");
   await createTodo(token, "alpha one");
   await createTodo(token, "beta two");
 
@@ -773,8 +773,8 @@ test("空关键字或纯空白等价于不搜索", async () => {
 });
 
 test("q 按 userId 隔离,不会跨用户命中", async () => {
-  const alice = await ensureUser("search_iso_alice", "secret123");
-  const bob = await ensureUser("search_iso_bob", "secret123");
+  const alice = await ensureUser("search_iso_alice", "secret1234567");
+  const bob = await ensureUser("search_iso_bob", "secret1234567");
   await createTodo(alice, "shared keyword alice");
   await createTodo(bob, "shared keyword bob");
 
@@ -789,7 +789,7 @@ test("q 按 userId 隔离,不会跨用户命中", async () => {
 });
 
 test("q 超过 200 字符返回 400,恰好 200 字符可用", async () => {
-  const token = await ensureUser("search_long", "secret123");
+  const token = await ensureUser("search_long", "secret1234567");
 
   const tooLong = await get("/api/todos?q=" + encodeURIComponent("a".repeat(201)), token);
   assert.equal(tooLong.status, 400);
@@ -799,7 +799,7 @@ test("q 超过 200 字符返回 400,恰好 200 字符可用", async () => {
 });
 
 test("q 与 since 同时出现返回 400,空白 q 不触发冲突", async () => {
-  const token = await ensureUser("search_since", "secret123");
+  const token = await ensureUser("search_since", "secret1234567");
   const item = await createTodo(token, "since search item");
 
   const conflict = await get(
@@ -817,7 +817,7 @@ test("q 与 since 同时出现返回 400,空白 q 不触发冲突", async () => 
 });
 
 test("q 中的 % 与 _ 按字面量匹配,不当作通配符", async () => {
-  const token = await ensureUser("search_literal", "secret123");
+  const token = await ensureUser("search_literal", "secret1234567");
   await createTodo(token, "50% off");
   await createTodo(token, "50X off");
   await createTodo(token, "a_b");
@@ -835,7 +835,7 @@ test("q 中的 % 与 _ 按字面量匹配,不当作通配符", async () => {
 });
 
 test("重复 q 参数(数组)返回 400", async () => {
-  const token = await ensureUser("search_dup", "secret123");
+  const token = await ensureUser("search_dup", "secret1234567");
   const res = await get("/api/todos?q=a&q=b", token);
   assert.equal(res.status, 400);
 });
