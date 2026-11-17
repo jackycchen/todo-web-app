@@ -344,7 +344,7 @@
   /* ---------- 多端增量同步(轮询,页面隐藏时暂停) ---------- */
 
   function isLoggedIn() {
-    return !!api && !!api.getToken() && !appView.hidden;
+    return !!api && api.hasSession() && !appView.hidden;
   }
 
   function startPolling() {
@@ -1227,8 +1227,8 @@
       showError("请输入用户名");
       return;
     }
-    if (!password || password.length < 6) {
-      showError("密码长度至少 6 位");
+    if (!password || password.length < 12) {
+      showError("密码长度至少 12 位");
       return;
     }
     api.register(username, password).then(function (data) {
@@ -1303,13 +1303,12 @@
   syncFilterTabs();
 
   /* ---------- 启动 ---------- */
-  // 已有 token 时尝试恢复会话,否则展示登录页
-  if (api && api.getToken()) {
+  // 会话由 HttpOnly cookie 承载:直接问服务端,200 进主视图,401 显示登录页
+  if (api) {
     api.getMe().then(function (data) {
       input.value = "";
       return showApp(data.username);
     }).catch(function () {
-      api.clearToken();
       showAuth();
     });
   } else {

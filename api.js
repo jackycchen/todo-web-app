@@ -1,49 +1,36 @@
 /**
  * 前端 API 封装:账号注册/登录/登出 + 待办 CRUD
  *
- * 依赖浏览器原生 fetch,Token 使用 localStorage 持久化,
- * 每次请求通过 Authorization: Bearer <token> 携带。
+ * 依赖浏览器原生 fetch。会话由服务端下发的 HttpOnly cookie(todo_sid)承载,
+ * 前端不接触、也不持久化 token;每个请求以 credentials: "same-origin" 携带 cookie,
+ * 因此 XSS 无法从 localStorage 读取会话凭据。
  */
 (function (root) {
   "use strict";
 
-  var TOKEN_KEY = "todo-app.token";
-
   // 允许通过 window.TODO_API_BASE 覆盖 API 前缀(测试/子路径部署用)
   var API_BASE = String((root.TODO_API_BASE || "")).replace(/\/+$/, "");
 
-  function getToken() {
-    try {
-      return root.localStorage.getItem(TOKEN_KEY) || null;
-    } catch (err) {
-      return null;
-    }
-  }
+  // 仅表示「本次页面生命周期内已确认登录」,不落盘;
+  // 刷新后由 getMe() 向服务端重新确认。
+  var sessionActive = false;
 
-  function setToken(token) {
-    try {
-      if (token) {
-        root.localStorage.setItem(TOKEN_KEY, token);
-      } else {
-        root.localStorage.removeItem(TOKEN_KEY);
-      }
-    } catch (err) {
-      // localStorage 不可用时静默忽略
-    }
+  function hasSession() {
+    return sessionActive;
   }
 
   function request(path, opts) {
     opts = opts || {};
     var headers = opts.headers || {};
-    var token = getToken();
-    if (token) headers["Authorization"] = "Bearer " + token;
     if (opts.body && !headers["Content-Type"]) {
       headers["Content-Type"] = "application/json";
     }
     return fetch(API_BASE + path, {
       method: opts.method || "GET",
       headers: headers,
-      body: opts.body
+      body: opts.body,
+      // 同源请求携带 HttpOnly cookie;跨源部署需要显式配置反向代理与 CORS
+      credentials: "same-origin"
     }).then(function (res) {
       return res.text().then(function (text) {
         var data = null;
@@ -55,8 +42,8 @@
           }
         }
         if (res.status === 401) {
-          // 会话失效:统一清除本地 token,并通知页面回到登录页
-          setToken(null);
+          // 会话失效:清除内存标志,并通知页面回到登录页
+          sessionActive = false;
           if (typeof api.onUnauthorized === "function") {
             api.onUnauthorized();
           }
@@ -83,9 +70,10 @@
     return request(path, { method: "DELETE" });
   }
 
-  function withToken(promiseData) {
+  // 登录/注册成功后,服务端已通过 Set-Cookie 建立会话
+  function markSession(promiseData) {
     return promiseData.then(function (data) {
-      if (data && data.token) setToken(data.token);
+      sessionActive = true;
       return data;
     });
   }
@@ -93,26 +81,25 @@
   var api = {
     // 页面层在加载时注册:任一请求返回 401 时被调用
     onUnauthorized: null,
-    getToken: getToken,
-    setToken: setToken,
-    clearToken: function () {
-      setToken(null);
-    },
+    hasSession: hasSession,
     register: function (username, password) {
-      return withToken(post("/api/register", { username: username, password: password }));
+      return markSession(post("/api/register", { username: username, password: password }));
     },
     login: function (username, password) {
-      return withToken(post("/api/login", { username: username, password: password }));
+      return markSession(post("/api/login", { username: username, password: password }));
     },
     logout: function () {
-      return request("/api/logout", { method: "POST" }).catch(function () {
-        // 即使服务端失败也清除本地 token
-      }).then(function () {
-        setToken(null);
-      });
+      return request("/api/logout", { method: "POST" })
+        .catch(function () {
+          // 即使服务端失败也清除本地会话标志
+        })
+        .then(function () {
+          sessionActive = false;
+        });
     },
     getMe: function () {
-      return request("/api/me");
+      // 启动时用它恢复会话:200 表示 cookie 仍有效,401 由统一逻辑处理
+      return markSession(request("/api/me"));
     },
     /**
      * 拉取待办。不传 since 时为全量;传入毫秒时间戳时只拉取该时间之后的变更

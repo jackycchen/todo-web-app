@@ -207,6 +207,49 @@ function makeLocalStorage() {
   };
 }
 
+/**
+ * 极简 cookie jar:Node 的 fetch 不实现 cookie,而会话现在由 HttpOnly cookie
+ * (todo_sid)承载。这里模拟浏览器行为——保存 Set-Cookie 并在后续请求中回传,
+ * 使加载的真实 api.js / todo.js 能以 credentials:"same-origin" 正常工作。
+ */
+const cookieJar = new Map();
+
+function applySetCookie(header) {
+  const parts = String(header).split(";");
+  const pair = parts.shift();
+  const eq = pair.indexOf("=");
+  if (eq < 0) return;
+  const name = pair.slice(0, eq).trim();
+  const value = pair.slice(eq + 1).trim();
+  let maxAge;
+  for (const attr of parts) {
+    const i = attr.indexOf("=");
+    const key = (i < 0 ? attr : attr.slice(0, i)).trim().toLowerCase();
+    if (key === "max-age") maxAge = Number(attr.slice(i + 1).trim());
+  }
+  if ((maxAge !== undefined && maxAge <= 0) || !value) cookieJar.delete(name);
+  else cookieJar.set(name, value);
+}
+
+/** 当前 jar 的 Cookie 请求头(供测试显式验证旧凭据失效) */
+function cookieHeader() {
+  return [...cookieJar].map(([k, v]) => `${k}=${v}`).join("; ");
+}
+
+function installCookieAwareFetch() {
+  const realFetch = global.fetch;
+  global.fetch = async (input, init = {}) => {
+    const headers = new Headers(init.headers || {});
+    if (!headers.has("cookie")) {
+      const cookie = cookieHeader();
+      if (cookie) headers.set("cookie", cookie);
+    }
+    const res = await realFetch(input, { ...init, headers });
+    for (const setCookie of res.headers.getSetCookie()) applySetCookie(setCookie);
+    return res;
+  };
+}
+
 before(async () => {
   const started = await startServer({
     dbPath: tmpDb,
@@ -225,11 +268,15 @@ before(async () => {
   global.window.TODO_POLL_INTERVAL_MS = 150; // 测试中缩短轮询间隔
   global.window.localStorage = localStorageShim;
   global.window.matchMedia = () => ({ matches: false });
+  installCookieAwareFetch();
 
   // 加载页面脚本(与 index.html 的顺序一致)
   require("../todo-core.js");
   require("../api.js");
   require("../todo.js");
+
+  // 启动时会用 getMe() 向服务端确认会话;空 jar -> 401 -> 显示登录页
+  await flush();
 });
 
 after(async () => {
@@ -294,7 +341,7 @@ function renderedItems() {
 async function registerAndSeed(username, texts) {
   clickTab(1);
   fillInput("register-username", username);
-  fillInput("register-password", "secret123");
+  fillInput("register-password", "secret1234567");
   submitForm("register-form");
   await flush();
   for (const text of texts) {
@@ -326,19 +373,21 @@ test("前端端到端:注册/增删改/登出/重新登录/用户隔离", async 
   // 初始未登录:显示登录视图
   assert.equal(getElement("auth-view").hidden, false);
   assert.equal(getElement("app-view").hidden, true);
-  assert.equal(window.localStorage.getItem("todo-app.token"), null);
+  assert.equal(window.TodoApi.hasSession(), false);
 
   // ---------- 注册 carol ----------
   clickTab(1);
   assert.equal(getElement("register-form").hidden, false);
   fillInput("register-username", "carol");
-  fillInput("register-password", "secret123");
+  fillInput("register-password", "secret1234567");
   submitForm("register-form");
   await flush();
 
   assert.equal(getElement("app-view").hidden, false);
   assert.equal(getElement("current-user").textContent, "carol");
-  assert.notEqual(window.localStorage.getItem("todo-app.token"), null);
+  assert.equal(window.TodoApi.hasSession(), true);
+  // 会话只存在于 HttpOnly cookie 中,前端不再持久化 token
+  assert.equal(window.localStorage.getItem("todo-app.token"), null);
 
   // ---------- 添加两条待办 ----------
   fillInput("todo-input", "给前端接入后端 API");
@@ -357,10 +406,8 @@ test("前端端到端:注册/增删改/登出/重新登录/用户隔离", async 
   assert.equal(getElement("stats-completed").textContent, "0");
   assert.equal(getElement("remaining-count-number").textContent, "2");
 
-  // 服务端确实收到了这两条
-  const serverList = await (await fetch(`${base}/api/todos`, {
-    headers: { Authorization: "Bearer " + window.localStorage.getItem("todo-app.token") },
-  })).json();
+  // 服务端确实收到了这两条(cookie jar 自动携带会话 cookie)
+  const serverList = await (await fetch(`${base}/api/todos`)).json();
   assert.equal(serverList.length, 2);
 
   // ---------- 切换完成状态 ----------
@@ -381,23 +428,25 @@ test("前端端到端:注册/增删改/登出/重新登录/用户隔离", async 
   assert.equal(getElement("remaining-count-number").textContent, "0");
 
   // ---------- 登出 ----------
-  const oldToken = window.localStorage.getItem("todo-app.token");
+  const oldCookie = cookieHeader();
+  assert.match(oldCookie, /todo_sid=/);
   getElement("logout-btn").handlers.click[0]();
   await flush();
   assert.equal(getElement("auth-view").hidden, false);
   assert.equal(getElement("app-view").hidden, true);
+  assert.equal(window.TodoApi.hasSession(), false);
   assert.equal(window.localStorage.getItem("todo-app.token"), null);
 
-  // 旧 token 已在服务端失效
+  // 旧 cookie 已在服务端失效:即使手动带上旧凭据也应被拒绝
   const meAfterLogout = await fetch(`${base}/api/me`, {
-    headers: { Authorization: "Bearer " + oldToken },
+    headers: { Cookie: oldCookie },
   });
   assert.equal(meAfterLogout.status, 401);
 
   // ---------- 重新登录,数据仍在 ----------
   clickTab(0);
   fillInput("login-username", "carol");
-  fillInput("login-password", "secret123");
+  fillInput("login-password", "secret1234567");
   submitForm("login-form");
   await flush();
   assert.equal(getElement("app-view").hidden, false);
@@ -409,7 +458,7 @@ test("前端端到端:注册/增删改/登出/重新登录/用户隔离", async 
   // ---------- 注册 dave,数据互相隔离 ----------
   clickTab(1);
   fillInput("register-username", "dave");
-  fillInput("register-password", "secret789");
+  fillInput("register-password", "secret7890123");
   submitForm("register-form");
   await flush();
 
@@ -426,24 +475,26 @@ test("前端端到端:注册/增删改/登出/重新登录/用户隔离", async 
   assert.equal(items[0].text, "dave 的任务");
 });
 
-test("会话过期:API 返回 401 时清除 token 并回登录页", async () => {
+test("会话过期:API 返回 401 时清除会话标志并回登录页", async () => {
   // 前序场景结束时为 dave 登录态
   assert.equal(getElement("app-view").hidden, false);
   assert.equal(getElement("current-user").textContent, "dave");
 
-  // 服务端使当前会话失效(模拟登录过期/服务端重启)
-  const token = window.localStorage.getItem("todo-app.token");
+  // 服务端使当前会话失效(模拟登录过期/服务端重启)。
+  // 手动带上旧 cookie 登出,只让服务端删会话,不影响页面内存中的 hasSession。
+  const staleCookie = cookieHeader();
   await fetch(`${base}/api/logout`, {
     method: "POST",
-    headers: { Authorization: "Bearer " + token },
+    headers: { Cookie: staleCookie },
   });
 
-  // 客户端仍持有旧 token:触发任意 API 调用(新增待办 -> createTodo)
+  // 客户端仍认为自己已登录:触发任意 API 调用(新增待办 -> createTodo)
   fillInput("todo-input", "会话过期后新增");
   submitForm("todo-form");
   await flush();
 
-  // 401 统一处理:清除本地 token 并回到登录页
+  // 401 统一处理:清除会话标志并回到登录页
+  assert.equal(window.TodoApi.hasSession(), false);
   assert.equal(window.localStorage.getItem("todo-app.token"), null);
   assert.equal(getElement("app-view").hidden, true);
   assert.equal(getElement("auth-view").hidden, false);
@@ -453,7 +504,7 @@ test("多端同步:另一会话修改后,本端轮询自动同步并提示", asy
   // 上一个用例已回到登录页;注册新用户 erin
   clickTab(1);
   fillInput("register-username", "erin");
-  fillInput("register-password", "secret123");
+  fillInput("register-password", "secret1234567");
   submitForm("register-form");
   await flush();
   assert.equal(getElement("app-view").hidden, false);
@@ -470,7 +521,7 @@ test("多端同步:另一会话修改后,本端轮询自动同步并提示", asy
   const loginRes = await fetch(`${base}/api/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username: "erin", password: "secret123" }),
+    body: JSON.stringify({ username: "erin", password: "secret1234567" }),
   });
   const { token } = await loginRes.json();
   const serverList = await (
@@ -500,7 +551,7 @@ test("空状态:无待办时展示插画、引导文案与添加入口", async (
   // 注册新用户 frank,待办为空
   clickTab(1);
   fillInput("register-username", "frank");
-  fillInput("register-password", "secret123");
+  fillInput("register-password", "secret1234567");
   submitForm("register-form");
   await flush();
 
@@ -525,14 +576,13 @@ test("空状态:无待办时展示插画、引导文案与添加入口", async (
 
 test("长列表:默认只渲染一页,加载更多后补齐且切换筛选重置分页", async () => {
   // 前一个用例结束时 frank 已登录,直接通过 API 批量造 25 条数据
-  const token = window.localStorage.getItem("todo-app.token");
-  assert.ok(token, "应处于登录态");
+  assert.ok(window.TodoApi.hasSession(), "应处于登录态");
 
   const posts = [];
   for (let i = 0; i < 25; i++) {
     posts.push(fetch(`${base}/api/todos`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text: `批量任务 ${i}` }),
     }));
   }
@@ -581,7 +631,7 @@ test("筛选标签 / 实时计数 / 一键清除已完成", async () => {
   // 注册独立用户 grace,避免受前序用例数据影响
   clickTab(1);
   fillInput("register-username", "grace");
-  fillInput("register-password", "secret123");
+  fillInput("register-password", "secret1234567");
   submitForm("register-form");
   await flush();
   assert.equal(getElement("app-view").hidden, false);
@@ -665,10 +715,7 @@ test("筛选标签 / 实时计数 / 一键清除已完成", async () => {
   assert.match(getElement("clear-status").textContent, /已清除 2 项已完成待办/);
 
   // 服务端同样只剩进行中的任务 C,确认没有误删未完成项
-  const token = window.localStorage.getItem("todo-app.token");
-  const serverList = await (
-    await fetch(`${base}/api/todos`, { headers: { Authorization: "Bearer " + token } })
-  ).json();
+  const serverList = await (await fetch(`${base}/api/todos`)).json();
   assert.deepEqual(
     serverList.map((t) => ({ text: t.text, completed: !!t.completed })),
     [{ text: "任务 C", completed: false }]
@@ -704,10 +751,7 @@ test("双击编辑:失焦(点击别处)自动保存而不是丢弃", async () =>
   assert.deepEqual(renderedItems().map((i) => i.text), ["失焦后", "保持不变"]);
   assert.equal(getElement("todo-list").children[0].classList.contains("is-editing"), false);
 
-  const token = window.localStorage.getItem("todo-app.token");
-  const serverList = await (
-    await fetch(`${base}/api/todos`, { headers: { Authorization: "Bearer " + token } })
-  ).json();
+  const serverList = await (await fetch(`${base}/api/todos`)).json();
   assert.ok(
     serverList.some((t) => t.text === "失焦后"),
     "失焦保存应通过 PATCH 提交到服务端"
@@ -730,10 +774,7 @@ test("双击编辑:内容未改动或为空白时失焦不产生写入", async (
   await flush();
   assert.deepEqual(renderedItems().map((i) => i.text), ["原文本"]);
 
-  const token = window.localStorage.getItem("todo-app.token");
-  const serverList = await (
-    await fetch(`${base}/api/todos`, { headers: { Authorization: "Bearer " + token } })
-  ).json();
+  const serverList = await (await fetch(`${base}/api/todos`)).json();
   assert.deepEqual(serverList.map((t) => t.text), ["原文本"]);
 });
 
@@ -774,10 +815,7 @@ test("双击编辑:输入法组合期回车不提交,确认候选词后再回车
   assert.deepEqual(renderedItems().map((i) => i.text), ["输入法完成"]);
   assert.equal(editingEditor(0), null, "提交后应退出编辑态");
 
-  const token = window.localStorage.getItem("todo-app.token");
-  const serverList = await (
-    await fetch(`${base}/api/todos`, { headers: { Authorization: "Bearer " + token } })
-  ).json();
+  const serverList = await (await fetch(`${base}/api/todos`)).json();
   assert.deepEqual(serverList.map((t) => t.text), ["输入法完成"]);
 
   // 组合期间 Escape 只取消候选词,不退出编辑态(此处单独验证)
@@ -809,15 +847,12 @@ test("双击编辑:轮询整表重绘后仍保留编辑态与未提交输入", a
   editor.handlers.input[0]({});
 
   // 同一账号的另一个会话修改另一条待办,触发本端轮询后的 render()
-  const token = window.localStorage.getItem("todo-app.token");
-  const serverList = await (
-    await fetch(`${base}/api/todos`, { headers: { Authorization: "Bearer " + token } })
-  ).json();
+  const serverList = await (await fetch(`${base}/api/todos`)).json();
   const target = serverList.find((t) => t.text === "远端会变的任务");
   assert.ok(target);
   const patchRes = await fetch(`${base}/api/todos/${encodeURIComponent(target.id)}`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ completed: true }),
   });
   assert.equal(patchRes.status, 200);
@@ -838,9 +873,7 @@ test("双击编辑:轮询整表重绘后仍保留编辑态与未提交输入", a
   await flush();
   assert.deepEqual(renderedItems()[0].text, "尚未提交的输入");
 
-  const after = await (
-    await fetch(`${base}/api/todos`, { headers: { Authorization: "Bearer " + token } })
-  ).json();
+  const after = await (await fetch(`${base}/api/todos`)).json();
   assert.ok(after.some((t) => t.text === "尚未提交的输入"), "编辑内容应写入服务端");
   assert.ok(!after.some((t) => t.text === "编辑中的任务"));
 });
@@ -851,7 +884,7 @@ test("优先级:前端修改后立即重排,刷新后仍然生效", async () => 
   // 注册独立用户 henry2,避免与其他用例已注册的用户重名
   clickTab(1);
   fillInput("register-username", "henry2");
-  fillInput("register-password", "secret123");
+  fillInput("register-password", "secret1234567");
   submitForm("register-form");
   await flush();
   assert.equal(getElement("current-user").textContent, "henry2");
@@ -880,10 +913,7 @@ test("优先级:前端修改后立即重排,刷新后仍然生效", async () => 
   );
 
   // 服务端已持久化优先级,并按新顺序返回
-  const token = window.localStorage.getItem("todo-app.token");
-  const serverList = await (
-    await fetch(`${base}/api/todos`, { headers: { Authorization: "Bearer " + token } })
-  ).json();
+  const serverList = await (await fetch(`${base}/api/todos`)).json();
   assert.deepEqual(
     serverList.map((t) => ({ text: t.text, priority: t.priority })),
     [
@@ -897,7 +927,7 @@ test("优先级:前端修改后立即重排,刷新后仍然生效", async () => 
   await flush();
   clickTab(0);
   fillInput("login-username", "henry2");
-  fillInput("login-password", "secret123");
+  fillInput("login-password", "secret1234567");
   submitForm("login-form");
   await flush();
 
@@ -914,7 +944,7 @@ test("保存后按服务端确认的 createdAt 重排,避免刷新前后顺序�
   await flush();
   clickTab(1);
   fillInput("register-username", "ivan");
-  fillInput("register-password", "secret123");
+  fillInput("register-password", "secret1234567");
   submitForm("register-form");
   await flush();
 

@@ -41,12 +41,17 @@ npm start
 
 ## 功能
 
-- 用户名 + 密码注册/登录,**密码经 scrypt 加盐哈希存储,不保存明文**
-- 登录后返回会话 token,后续请求通过 `Authorization: Bearer <token>` 鉴权
-- **会话有过期时间**:默认 7 天,可用 `TODO_SESSION_TTL_MS` 覆盖;
+- 用户名 + 密码注册/登录,**密码最短 12 位,经 scrypt 加盐哈希存储,不保存明文**
+- 登录/注册成功下发 `todo_sid` 会话 cookie(`HttpOnly` + `SameSite=Lax`),
+  浏览器端不接触也不持久化 token,可降低 XSS 窃取会话的风险;
+  API 客户端仍可用 `Authorization: Bearer <token>` 鉴权
+- **登录失败限流**:同一 `IP|用户名` 60 秒内失败 5 次后返回
+  `429` `{ code: "RATE_LIMITED" }` 并带 `Retry-After`;注册失败按同 IP
+  60 秒 10 次限流;成功登录会清零失败计数
+- **会话有过期时间**:默认 30 天,可用 `TODO_SESSION_TTL_MS` 覆盖;
   过期 token 一律返回 401,过期记录会被定期清理
 - 待办数据按用户在服务端隔离,任何浏览器登录同一账号都能看到同样数据
-- 会话失效(任一 API 返回 401)时自动清除本地 token 并回到登录页,重新登录即可继续
+- 会话失效(任一 API 返回 401)时自动清除本地会话标志并回到登录页,重新登录即可继续
 - **多端实时同步**:客户端每 5 秒轮询一次 `GET /api/todos?since=<上次同步时间>`,
   页面隐藏时暂停,恢复可见时立即拉取一次
 - **冲突处理(last-write-wins)**:按服务端毫秒级 `updatedAt` 比较,较新的写入胜出;
@@ -70,10 +75,11 @@ npm start
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/health` | 健康检查 | 
-| POST | `/api/register` | 注册,body `{ username, password }`,返回 `{ token, username, expiresAt }` |
-| POST | `/api/login` | 登录,body 同上,返回 `{ token, username, expiresAt }` |
-| POST | `/api/logout` | 登出,删除当前会话(幂等,重复调用仍返回 204) |
+| GET | `/healthz` | 健康检查(执行 `SELECT 1` 探活) | 
+| GET | `/api/health` | 健康检查(与 `/healthz` 复用同一实现) | 
+| POST | `/api/register` | 注册,body `{ username, password }`(密码 ≥ 12 位),返回 `{ token, username, expiresAt }` 并下发 `todo_sid` cookie |
+| POST | `/api/login` | 登录,body 同上,返回 `{ token, username, expiresAt }` 并下发 `todo_sid` cookie |
+| POST | `/api/logout` | 登出,删除当前会话并清除 cookie(幂等,重复调用仍返回 204) |
 | GET | `/api/me` | 获取当前登录用户(需鉴权) |
 | GET | `/api/todos` | 列出当前用户全部未删除待办(需鉴权) |
 | GET | `/api/todos?since=<ms>` | 增量拉取 `updatedAt > since` 的变更,含删除墓碑(需鉴权) |
@@ -147,6 +153,67 @@ npm start
 - 旧数据库自动迁移:`ALTER TABLE sessions ADD COLUMN expires_at`,并按
   `created_at + TTL` 回填,老会话不会全部失效,也不会全部变成永久有效。
 
+## 部署约束与健康检查
+
+### 单实例部署
+
+本应用使用 Node 内置的 `node:sqlite`(`DatabaseSync`),数据库是**进程内**连接:
+SQLite 文件由单个服务进程独占写入。同一份 `TODO_DB_PATH` 被多个实例共享时,
+并发写入会触发 `SQLITE_BUSY`(连接已设置 `PRAGMA busy_timeout = 5000` 只能缓解短暂争用,
+不能解决多写者冲突)。
+
+因此当前版本要求 **单实例部署**:
+
+- 用进程管理器(systemd / Docker restart 策略等)保证只有一个 `node server.js` 写该库文件;
+- 需要水平扩容时,先把持久化层换成独立的数据库服务(如 PostgreSQL/MySQL),
+  再让多个无状态实例共享它;
+- 不要在滚动发布时让新旧实例同时写同一个 `TODO_DB_PATH`。
+
+### 环境变量
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `PORT` | `3000` | HTTP 监听端口 |
+| `TODO_DB_PATH` | `data/todo.db` | SQLite 文件路径(目录不存在会自动创建) |
+| `TODO_SESSION_TTL_MS` / `SESSION_TTL_DAYS` | 30 天 | 会话有效期 |
+
+```bash
+PORT=8080 TODO_DB_PATH=/var/lib/todo/todo.db npm start
+```
+
+### `/healthz`
+
+`GET /healthz` 会真实执行一次 `SELECT 1` 探活,适合作为容器/负载均衡的就绪探针;
+`GET /api/health` 保留且与它复用同一实现。成功返回 `200`:
+
+```json
+{ "ok": true, "db": "ok", "uptimeMs": 123456 }
+```
+
+数据库不可用时返回 `503`:
+
+```json
+{ "ok": false, "db": "error" }
+```
+
+探针请以 **HTTP 状态码** 判断(200 = 就绪,503 = 未就绪),不要只解析 `ok` 字段。
+
+### 会话与密码
+
+- 注册密码最短 **12 位**(上限 128 位),服务端与前端提示保持一致。
+- 浏览器会话通过 `Set-Cookie: todo_sid=<token>; Path=/; HttpOnly; SameSite=Lax`
+  下发;`Max-Age` 与会话 TTL 一致。仅在直连 HTTPS 或反向代理声明
+  `X-Forwarded-Proto: https` 时追加 `Secure`。
+- 前端不再把 token 写入 `localStorage`;API 客户端(非浏览器)可继续使用
+  `Authorization: Bearer <token>`,服务端两者都接受且 Bearer 优先。
+
+### 已知的部署边界
+
+- 登录/注册限流是**进程内内存**实现,重启后清零,多实例之间也不共享;
+  需要跨实例一致限流时应放到反向代理或 Redis 层。
+- 页面通过 `connect-src 'self'` 限定同源请求,若把前端与 API 分域名部署,
+  需要同时调整 CSP 与 cookie 的 `SameSite`/`Domain` 配置。
+
 ## 单元与集成测试
 
 核心逻辑测试独立在 `todo-core.js`,后端 API 与前端端到端测试
@@ -167,7 +234,7 @@ npm test
 |---|---|
 | `index.html` | 页面入口,依次加载 `todo-core.js`、`api.js`、`todo.js` |
 | `todo-core.js` | 纯逻辑核心(create/add/toggle/edit/remove/filter/sanitize),UMD 兼容浏览器与 Node |
-| `api.js` | 前端 API 封装:注册/登录/登出 + 待办 CRUD,Token 存 localStorage |
+| `api.js` | 前端 API 封装:注册/登录/登出 + 待办 CRUD,会话由 `todo_sid` HttpOnly cookie 承载 |
 | `todo.js` | DOM 渲染、事件绑定、认证流程;`loadTodos`/`saveTodos` 改为调用后端 API |
 | `server.js` | Express 后端:静态托管 + 认证 + 待办 CRUD,按用户隔离 |
 | `lib/db.js` | SQLite 持久化层(users / sessions / todos 三张表) |
@@ -178,6 +245,8 @@ npm test
 | `test/migration.test.js` | 旧库迁移测试(ALTER TABLE + updatedAt 回填) |
 | `test/priority.test.js` | 优先级测试(旧库默认值 / SQL 排序 / 增量同步) |
 | `test/session.test.js` | 会话生命周期测试(过期 401 / 惰性删除 / 定时清理 / TTL 解析 / expires_at 迁移) |
+| `test/security.test.js` | 安全专项测试(登录/注册限流、密码强度、cookie 会话、安全响应头、CSP、健康检查) |
+| `test/db-write.test.js` | 写路径事务测试(并发配额、withTx 回滚、busy_timeout) |
 
 push 验证 2026-10-16
 PR 创建验证 2026-10-16
