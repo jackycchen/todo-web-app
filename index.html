@@ -82,6 +82,19 @@
       <button type="submit" class="todo-add-btn">添加</button>
     </form>
 
+    <form id="search-form" class="search-bar" role="search" autocomplete="off">
+      <input
+        type="search"
+        id="todo-search"
+        class="search-input"
+        placeholder="搜索待办关键字"
+        maxlength="200"
+        aria-label="按关键字搜索待办"
+      >
+      <button type="button" id="search-clear-btn" class="search-clear-btn" aria-label="清除搜索" hidden>✕</button>
+    </form>
+    <p id="search-status" class="search-status" role="status" aria-live="polite"></p>
+
     <div class="filter-toolbar">
       <div class="filters" role="tablist" aria-label="筛选待办">
         <button type="button" id="filter-tab-all" class="filter-btn is-active" data-filter="all" role="tab" aria-selected="true" aria-controls="todo-panel" tabindex="0">全部</button>

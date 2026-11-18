@@ -55,6 +55,26 @@ test("请求以 same-origin cookie 鉴权,不再发送 Authorization 头", async
   assert.equal(call.init.headers.Authorization, undefined);
 });
 
+test("searchTodos 对关键字编码并请求 q 参数,不与 since 组合", async () => {
+  global.__response = jsonResponse(200, []);
+  const keyword = "买 牛奶&100%_中";
+  const data = await TodoApi.searchTodos(keyword);
+
+  assert.deepEqual(data, []);
+  const call = fetchCalls[0];
+  assert.equal(call.url, "http://test/api/todos?q=" + encodeURIComponent(keyword));
+  assert.equal(call.init.method, "GET");
+  assert.equal(call.init.credentials, "same-origin");
+  assert.equal(call.init.headers.Authorization, undefined);
+  assert.ok(!call.url.includes("since="), "搜索不应与增量同步参数组合");
+});
+
+test("searchTodos 空关键字请求空的 q 参数(由服务端等价于不检索)", async () => {
+  global.__response = jsonResponse(200, []);
+  await TodoApi.searchTodos(null);
+  assert.equal(fetchCalls[0].url, "http://test/api/todos?q=");
+});
+
 test("登录后后续请求同样不携带 Authorization 头", async () => {
   global.__response = jsonResponse(200, { username: "alice" });
   await TodoApi.login("alice", "secret1234567");

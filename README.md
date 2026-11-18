@@ -63,6 +63,9 @@ npm start
   同级按创建时间升序;修改优先级会刷新 `updatedAt`,可同步到其他端
 - **筛选标签**:「全部 / 进行中 / 已完成」三个标签可切换展示集合,选中态带
   `role="tab"` / `aria-selected` 等无障碍属性,并支持方向键切换
+- **关键字搜索**:输入关键字后经 250ms 防抖调用 `GET /api/todos?q=`,
+  只展示命中项,并可与筛选标签、分页叠加;搜索输入支持中文输入法组合期(不误触发),
+  Esc / 清除按钮 / 空状态按钮均可恢复全量视图;搜索词不做持久化,刷新后清除
 - **实时计数**:筛选栏下方实时显示「还剩 N 项未完成」,随增删改与多端同步自动更新
 - **一键清除已完成**:仅删除已完成项(进行中项不受影响);首次点击进入二次确认,
   再次点击才执行,超时或数据变化会自动取消确认
@@ -83,6 +86,7 @@ npm start
 | GET | `/api/me` | 获取当前登录用户(需鉴权) |
 | GET | `/api/todos` | 列出当前用户全部未删除待办(需鉴权) |
 | GET | `/api/todos?since=<ms>` | 增量拉取 `updatedAt > since` 的变更,含删除墓碑(需鉴权) |
+| GET | `/api/todos?q=<keyword>` | 按关键字检索当前用户待办(需鉴权;不能与 `since` 同时使用) |
 | POST | `/api/todos` | 新建待办,body `{ text, completed?, priority? }`(需鉴权) |
 | PATCH | `/api/todos/:id` | 更新待办,body `{ text?, completed?, priority? }`(需鉴权) |
 | DELETE | `/api/todos/:id` | 删除待办(软删除,需鉴权) |
@@ -128,6 +132,27 @@ npm start
 - 旧数据库自动迁移:`ALTER TABLE` 新增 `updated_at` / `deleted` / `priority` 列,
   旧记录 `updated_at` 回填为 `created_at`,`priority` 回填为 `1`(普通)。
   因此迁移后未设置优先级的条目仍按 `created_at` 升序,原有列表观感不变。
+
+### 关键字搜索
+
+- **匹配规则**:对 `text` 做子串匹配(SQLite `instr(lower(text), lower(q))`),
+  ASCII 字母大小写不敏感;`%`、`_` 按普通字符处理(不是 SQL 通配符)。
+  非 ASCII 字符不做额外的大小写折叠(与 `lower()` 的 SQLite 行为一致)。
+  只检索当前用户、未删除的条目,排序与全量接口相同
+  (`priority DESC, created_at ASC`)。
+- **参数约束**:关键字去除首尾空白;空串/纯空白等价于不检索;
+  最长 **200 个字符**,超长返回 `400`(不截断,避免产生假命中);
+  重复 `q`(被解析为数组)返回 `400`;`q` 与 `since` 互斥,同时使用返回 `400`。
+- **前端行为**:输入经 250ms 防抖(可通过 `window.TODO_SEARCH_DEBOUNCE_MS`
+  覆盖,测试用),输入法组合期不触发;回车立即检索,清空输入 / 清除按钮 / Esc /
+  空状态按钮均可退出搜索。搜索结果以 id 集合投影到本地 canonical 待办上,
+  不会成为第二份可变状态,因此写操作、分页、筛选与多端同步的语义保持不变。
+- **与筛选/分页/同步的关系**:搜索结果仍套用当前筛选标签并参与分页;
+  「还剩 N 项未完成」「清除已完成」维持全局口径,不随搜索收窄。
+  搜索期间轮询继续用 `since` 合并增量到 canonical 列表,有变更时延迟 150ms
+  重新检索以刷新命中集合;搜索响应不会推进 `lastSyncAt`。搜索结果中本地缺失
+  的条目会合并进列表,但本地待删除的条目不会被搜索响应复活。
+- **不持久化**:搜索词不写入 URL 或 localStorage,刷新页面后恢复全量视图。
 
 ### 会话生命周期
 
@@ -234,14 +259,14 @@ npm test
 |---|---|
 | `index.html` | 页面入口,依次加载 `todo-core.js`、`api.js`、`todo.js` |
 | `todo-core.js` | 纯逻辑核心(create/add/toggle/edit/remove/filter/sanitize),UMD 兼容浏览器与 Node |
-| `api.js` | 前端 API 封装:注册/登录/登出 + 待办 CRUD,会话由 `todo_sid` HttpOnly cookie 承载 |
-| `todo.js` | DOM 渲染、事件绑定、认证流程;`loadTodos`/`saveTodos` 改为调用后端 API |
+| `api.js` | 前端 API 封装:注册/登录/登出 + 待办 CRUD/关键字搜索,会话由 `todo_sid` HttpOnly cookie 承载 |
+| `todo.js` | DOM 渲染、事件绑定、认证流程、搜索投影与防抖;`loadTodos`/`saveTodos` 调用后端 API |
 | `server.js` | Express 后端:静态托管 + 认证 + 待办 CRUD,按用户隔离 |
 | `lib/db.js` | SQLite 持久化层(users / sessions / todos 三张表) |
 | `test/todo-core.test.js` | 核心逻辑单元测试 |
 | `test/api.test.js` | 后端 API 集成测试(含 updatedAt / since / 删除同步 / LWW) |
-| `test/api-client.test.js` | 前端 API 客户端单元测试(假 fetch) |
-| `test/frontend.test.js` | 前端端到端测试(DOM 轻量桩,含双端轮询同步) |
+| `test/api-client.test.js` | 前端 API 客户端单元测试(假 fetch,含搜索 URL 编码) |
+| `test/frontend.test.js` | 前端端到端测试(DOM 轻量桩,含双端轮询同步与关键字搜索) |
 | `test/migration.test.js` | 旧库迁移测试(ALTER TABLE + updatedAt 回填) |
 | `test/priority.test.js` | 优先级测试(旧库默认值 / SQL 排序 / 增量同步) |
 | `test/session.test.js` | 会话生命周期测试(过期 401 / 惰性删除 / 定时清理 / TTL 解析 / expires_at 迁移) |
