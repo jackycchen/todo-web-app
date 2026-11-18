@@ -575,3 +575,76 @@ test("sanitizeItems 为缺失/非法 priority 的数据补默认「普通」", (
 
   assert.deepEqual(clean.map((t) => t.priority), [1, 1, 2]);
 });
+
+/* ---------- 关键字搜索 ---------- */
+
+test("normalizeSearchQuery 归一化任意输入并去除首尾空白", () => {
+  assert.equal(core.normalizeSearchQuery(undefined), "");
+  assert.equal(core.normalizeSearchQuery(null), "");
+  assert.equal(core.normalizeSearchQuery("   "), "");
+  assert.equal(core.normalizeSearchQuery("  买 牛奶 "), "买 牛奶");
+  assert.equal(core.normalizeSearchQuery(123), "123");
+});
+
+test("formatSearchQuery 短关键字原样返回,超长时截断并加省略号", () => {
+  assert.equal(core.formatSearchQuery("  牛奶 "), "牛奶");
+
+  const max = core.SEARCH_QUERY_DISPLAY_MAX;
+  const exact = "a".repeat(max);
+  assert.equal(core.formatSearchQuery(exact), exact, "恰好达到上限时不截断");
+
+  const long = "b".repeat(max + 10);
+  const formatted = core.formatSearchQuery(long);
+  assert.equal(formatted.length, max + 1);
+  assert.equal(formatted, "b".repeat(max) + "…");
+  assert.ok(!formatted.includes(long), "不应展示完整超长关键字");
+});
+
+test("getEmptyStateText 第三个参数缺省时保持原有行为", () => {
+  const todos = makeTodos([{ id: "a", text: "写代码", completed: true }]);
+  assert.equal(core.getEmptyStateText(todos, core.FILTERS.ACTIVE), "没有未完成的待办 🎉");
+  assert.equal(core.getEmptyStateText(todos, core.FILTERS.ALL, ""), null);
+  assert.equal(core.getEmptyStateText([], core.FILTERS.ALL, "   "), "暂无待办,添加一条开始吧 ✨");
+});
+
+test("getEmptyStateText 搜索无匹配时返回搜索专属文案", () => {
+  assert.equal(
+    core.getEmptyStateText([], core.FILTERS.ALL, "牛奶"),
+    "没有匹配「牛奶」的待办"
+  );
+  assert.equal(
+    core.getEmptyStateText([], core.FILTERS.ACTIVE, "牛奶"),
+    "匹配「牛奶」的待办中没有未完成的"
+  );
+  assert.equal(
+    core.getEmptyStateText([], core.FILTERS.COMPLETED, "牛奶"),
+    "匹配「牛奶」的待办中还没有已完成的"
+  );
+});
+
+test("getEmptyStateText 搜索结果非空但被当前筛选排除时仍给出搜索文案", () => {
+  const matched = makeTodos([
+    { id: "a", text: "买牛奶", completed: true },
+    { id: "b", text: "牛奶面包", completed: true }
+  ]);
+
+  assert.equal(
+    core.getEmptyStateText(matched, core.FILTERS.ACTIVE, "牛奶"),
+    "匹配「牛奶」的待办中没有未完成的"
+  );
+  assert.equal(core.getEmptyStateText(matched, core.FILTERS.ALL, "牛奶"), null);
+});
+
+test("getEmptyStateText 搜索词过长时在文案中截断", () => {
+  const query = "c".repeat(core.SEARCH_QUERY_DISPLAY_MAX + 5);
+  const text = core.getEmptyStateText([], core.FILTERS.ALL, query);
+  assert.ok(text.includes("…"));
+  assert.ok(!text.includes(query), "空状态文案不应包含完整超长关键字");
+});
+
+test("getEmptyStateText 非数组入参 + 查询时返回搜索文案", () => {
+  assert.equal(
+    core.getEmptyStateText(null, core.FILTERS.ALL, "牛奶"),
+    "没有匹配「牛奶」的待办"
+  );
+});

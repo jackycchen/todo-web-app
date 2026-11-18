@@ -34,6 +34,12 @@
   /** 长列表分页:每页默认条数 */
   var DEFAULT_PAGE_SIZE = 20;
 
+  /** 搜索关键字最大长度(与服务端 TODO_TEXT_MAX_LENGTH 保持一致) */
+  var SEARCH_QUERY_MAX_LENGTH = 200;
+
+  /** 空状态/状态提示中展示搜索词的最大长度,超出部分以省略号截断 */
+  var SEARCH_QUERY_DISPLAY_MAX = 24;
+
   /** 把任意输入归一化为合法优先级;非法/缺失一律视为「普通」 */
   function normalizePriority(value) {
     return value === PRIORITIES.LOW ||
@@ -231,13 +237,48 @@
   }
 
   /**
+   * 归一化搜索关键字:任意值转字符串并去除首尾空白。
+   * 空串表示「关闭搜索」,由调用方据此恢复全量视图。
+   */
+  function normalizeSearchQuery(value) {
+    if (value === undefined || value === null) return "";
+    return String(value).trim();
+  }
+
+  /**
+   * 生成用于界面展示的搜索词(过长时截断并加省略号)。
+   * 仅影响展示,实际请求始终使用完整的 normalizeSearchQuery 结果。
+   */
+  function formatSearchQuery(value) {
+    var normalized = normalizeSearchQuery(value);
+    if (normalized.length <= SEARCH_QUERY_DISPLAY_MAX) return normalized;
+    return normalized.slice(0, SEARCH_QUERY_DISPLAY_MAX) + "…";
+  }
+
+  /** 搜索无匹配时的空状态文案(区分当前筛选标签) */
+  function getSearchEmptyStateText(query, filter) {
+    var label = formatSearchQuery(query);
+    if (filter === FILTERS.ACTIVE) return "匹配「" + label + "」的待办中没有未完成的";
+    if (filter === FILTERS.COMPLETED) return "匹配「" + label + "」的待办中还没有已完成的";
+    return "没有匹配「" + label + "」的待办";
+  }
+
+  /**
    * 计算空状态提示文案。
    * 视图(即筛后的可见列表)非空时返回 null(不显示空状态);
    * 否则据数据与筛选返回对应提示,区分"完全无待办"与"筛选无匹配"。
+   *
+   * 第三个参数 query 为可选搜索关键字:
+   *  - 缺省/空串时保持原有行为(向后兼容);
+   *  - 非空且视图为空时返回搜索专属文案(todos 应为搜索投影后的列表)。
    */
-  function getEmptyStateText(todos, filter) {
-    if (!Array.isArray(todos)) return "暂无待办,添加一条开始吧 ✨";
+  function getEmptyStateText(todos, filter, query) {
+    var hasQuery = normalizeSearchQuery(query).length > 0;
+    if (!Array.isArray(todos)) {
+      return hasQuery ? getSearchEmptyStateText(query, filter) : "暂无待办,添加一条开始吧 ✨";
+    }
     if (getVisibleTodos(todos, filter).length > 0) return null;
+    if (hasQuery) return getSearchEmptyStateText(query, filter);
     if (todos.length === 0) return "暂无待办,添加一条开始吧 ✨";
     if (filter === FILTERS.ACTIVE) return "没有未完成的待办 🎉";
     if (filter === FILTERS.COMPLETED) return "还没有已完成的待办 💪";
@@ -291,7 +332,11 @@
     DEFAULT_PRIORITY: DEFAULT_PRIORITY,
     PRIORITY_LABELS: PRIORITY_LABELS,
     DEFAULT_PAGE_SIZE: DEFAULT_PAGE_SIZE,
+    SEARCH_QUERY_MAX_LENGTH: SEARCH_QUERY_MAX_LENGTH,
+    SEARCH_QUERY_DISPLAY_MAX: SEARCH_QUERY_DISPLAY_MAX,
     normalizePriority: normalizePriority,
+    normalizeSearchQuery: normalizeSearchQuery,
+    formatSearchQuery: formatSearchQuery,
     generateId: generateId,
     createTodo: createTodo,
     addTodo: addTodo,

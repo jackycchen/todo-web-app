@@ -111,6 +111,15 @@
       }
       return request("/api/todos?since=" + encodeURIComponent(String(since)));
     },
+    /**
+     * 按关键字检索待办(全量检索,不与 since 组合)。
+     * 关键字由服务端 trim 并按子串匹配;空关键字等价于不检索,
+     * 因此调用方应先归一化并在空串时直接恢复全量视图。
+     */
+    searchTodos: function (keyword) {
+      var query = keyword == null ? "" : String(keyword);
+      return request("/api/todos?q=" + encodeURIComponent(query));
+    },
     createTodo: function (item) {
       // id / createdAt 由服务端生成,前端只提交用户可控的业务字段。
       // priority 缺省时不提交,由服务端按「普通」处理。
