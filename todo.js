@@ -48,6 +48,17 @@
       ? Math.min(configuredPoll, 10000)
       : 5000;
 
+  /**
+   * 搜索输入防抖时长(ms)。默认 250ms,可通过 window.TODO_SEARCH_DEBOUNCE_MS
+   * 覆盖(测试设为 0 以立即检索)。
+   */
+  var configuredSearchDebounce =
+    typeof window !== "undefined" ? Number(window.TODO_SEARCH_DEBOUNCE_MS) : NaN;
+  var SEARCH_DEBOUNCE_MS =
+    Number.isFinite(configuredSearchDebounce) && configuredSearchDebounce >= 0
+      ? Math.floor(configuredSearchDebounce)
+      : 250;
+
   /** 同步提示("已在其他设备更新")的展示时长 */
   var NOTICE_MS = 4000;
 
@@ -59,6 +70,23 @@
 
   /** 增量拉取游标:已见过的最大 updatedAt(服务端毫秒时间戳) */
   var lastSyncAt = 0;
+
+  /**
+   * 搜索状态:
+   *  - searchQuery : 当前生效的关键字(已去空白);空串表示未搜索
+   *  - searchSeq   : 请求序号,只采纳最新序号的响应(快速输入时丢弃过期结果)
+   *  - searchLoading / searchError: 状态区展示
+   * 搜索态下 todos 与 lastSynced 由同一次检索响应原子替换,二者始终同源;
+   * 清空搜索时重新请求不带 q 的全量列表并恢复增量轮询。
+   */
+  var searchQuery = "";
+  var searchSeq = 0;
+  var searchTimer = null;
+  var searchRefreshTimer = null;
+  var searchLoading = false;
+  var searchError = "";
+  /** 搜索框输入法组合期标记(中文候选词未确认时不触发检索) */
+  var searchComposing = false;
 
   var pollTimer = null;
   var pollInFlight = false;
@@ -95,6 +123,9 @@
 
   var form = document.getElementById("todo-form");
   var input = document.getElementById("todo-input");
+  var searchInput = document.getElementById("todo-search");
+  var searchClearBtn = document.getElementById("search-clear-btn");
+  var searchStatus = document.getElementById("search-status");
   var list = document.getElementById("todo-list");
   var statsCompleted = document.getElementById("stats-completed");
   var statsTotal = document.getElementById("stats-total");
@@ -128,6 +159,8 @@
     stopPolling();
     resetClearConfirm(false);
     hideClearStatus();
+    // 登录态结束:清空搜索关键字与在途检索,避免串到下一个会话
+    resetSearchState();
     // 退出登录后不应在下次进入时恢复上一次的编辑态
     editState = null;
     authView.hidden = false;
@@ -137,6 +170,8 @@
   function showApp(username) {
     authView.hidden = true;
     appView.hidden = false;
+    // 每次进入主视图都从未搜索开始
+    resetSearchState();
     if (currentUser) currentUser.textContent = username || "";
     return loadTodos().then(function (items) {
       startPolling();
@@ -246,6 +281,9 @@
       })
       .then(function () {
         saveInFlight -= 1;
+        // 写队列排空后,搜索态下重新检索:新建/改名/删除都可能改变命中集合,
+        // 且结果集需重新与服务端对齐(避免把未命中项留在本地结果里)。
+        if (saveInFlight === 0 && isSearching() && isLoggedIn()) scheduleSearchRefresh();
       });
     return saveQueue;
   }
@@ -363,11 +401,15 @@
 
   function pollTodos() {
     if (!api || document.hidden || pollInFlight || saveInFlight > 0 || !isLoggedIn()) return;
+    // 搜索期间不发起增量(since)轮询:q 与 since 互斥
+    if (isSearching()) return;
     pollInFlight = true;
     api.getTodos(lastSyncAt)
       .then(function (changes) {
         // 请求期间可能已登出/切到登录页,避免把数据写回已关闭的视图
         if (!isLoggedIn()) return;
+        // 请求期间可能已进入搜索态:丢弃在途的增量响应,避免污染检索结果集
+        if (isSearching()) return;
         applyRemoteChanges(changes);
       })
       .catch(function (err) {
@@ -492,7 +534,7 @@
     document.addEventListener("visibilitychange", function () {
       if (document.hidden) {
         stopPolling();
-      } else if (isLoggedIn()) {
+      } else if (isLoggedIn() && !isSearching()) {
         startPolling();
         pollTodos();
       }
@@ -524,6 +566,7 @@
 
     renderSummary();
     renderClearCompletedButton();
+    renderSearchStatus();
     updateEmptyState(visible.length);
     renderPagination(visible.length);
     restoreEditMode(page);
@@ -657,16 +700,24 @@
     emptyState.hidden = false;
     if (emptyStateTitle) emptyStateTitle.textContent = getEmptyStateTitle();
     if (emptyStateHint) {
-      emptyStateHint.textContent =
-        todos.length === 0
-          ? "点击上方输入框,添加你的第一条待办吧 ✨"
-          : core.getEmptyStateText(todos, currentFilter) || "";
+      if (isSearching()) {
+        // 搜索语境:文案包含关键字,区分"没有命中"与"命中集被筛选收窄"
+        emptyStateHint.textContent =
+          core.getEmptyStateText(todos, currentFilter, searchQuery) || "";
+      } else if (todos.length === 0) {
+        emptyStateHint.textContent = "点击上方输入框,添加你的第一条待办吧 ✨";
+      } else {
+        emptyStateHint.textContent = core.getEmptyStateText(todos, currentFilter) || "";
+      }
     }
-    // 只有"完全没有待办"时提供添加引导;筛选无匹配时添加按钮没有意义
-    if (emptyStateAction) emptyStateAction.hidden = todos.length !== 0;
+    // 搜索无匹配时隐藏「添加第一个待办」入口;筛选无匹配时也不提供
+    if (emptyStateAction) {
+      emptyStateAction.hidden = isSearching() || todos.length !== 0;
+    }
   }
 
   function getEmptyStateTitle() {
+    if (isSearching()) return "没有匹配的待办";
     if (todos.length === 0) return "还没有待办事项";
     if (currentFilter === FILTERS.ACTIVE) return "全部完成啦";
     if (currentFilter === FILTERS.COMPLETED) return "还没有已完成的事项";
@@ -1134,6 +1185,181 @@
     showClearStatus("已清除 " + completedCount + " 项已完成待办");
   }
 
+  /* ---------- 关键字搜索 ---------- */
+
+  function isSearching() {
+    return searchQuery !== "";
+  }
+
+  function cancelSearchTimers() {
+    if (searchTimer != null) {
+      window.clearTimeout(searchTimer);
+      searchTimer = null;
+    }
+    if (searchRefreshTimer != null) {
+      window.clearTimeout(searchRefreshTimer);
+      searchRefreshTimer = null;
+    }
+  }
+
+  /** 登录/登出时彻底复位搜索:清空输入、关键字并作废在途请求 */
+  function resetSearchState() {
+    cancelSearchTimers();
+    // 递增序号:任何在途检索响应都会因序号过期被丢弃
+    searchSeq += 1;
+    searchQuery = "";
+    searchLoading = false;
+    searchError = "";
+    searchComposing = false;
+    if (searchInput) searchInput.value = "";
+    syncSearchClearButton();
+    renderSearchStatus();
+  }
+
+  /** 清除按钮:输入框有内容或正处于搜索态时可见 */
+  function syncSearchClearButton() {
+    if (!searchClearBtn) return;
+    var typed =
+      searchInput && typeof searchInput.value === "string"
+        ? core.normalizeSearchQuery(searchInput.value)
+        : "";
+    searchClearBtn.hidden = !(typed || isSearching());
+  }
+
+  /** 更新搜索状态区(aria-live),并同步清除按钮 */
+  function renderSearchStatus() {
+    syncSearchClearButton();
+    if (!searchStatus) return;
+    if (!isSearching()) {
+      searchStatus.textContent = "";
+      return;
+    }
+    var label = core.normalizeSearchQuery(searchQuery);
+    if (searchError) {
+      searchStatus.textContent = "搜索失败:" + searchError;
+    } else if (searchLoading) {
+      searchStatus.textContent = "正在搜索「" + label + "」…";
+    } else {
+      searchStatus.textContent =
+        "找到 " + todos.length + " 项匹配「" + label + "」的待办";
+    }
+  }
+
+  /** 防抖后再检索,避免逐字输入放大请求 */
+  function scheduleSearch() {
+    if (searchTimer != null) window.clearTimeout(searchTimer);
+    searchTimer = window.setTimeout(function () {
+      searchTimer = null;
+      runSearchFromInput();
+    }, SEARCH_DEBOUNCE_MS);
+    if (searchTimer && typeof searchTimer.unref === "function") searchTimer.unref();
+  }
+
+  function runSearchFromInput() {
+    var query = core.normalizeSearchQuery(searchInput ? searchInput.value : "");
+    syncSearchClearButton();
+    if (!query) {
+      // 纯空白或已清空:恢复不带 q 的全量列表
+      if (isSearching()) clearSearch();
+      else renderSearchStatus();
+      return;
+    }
+    beginSearch(query);
+  }
+
+  /** 提交搜索:作废旧结果,暂停轮询并发起 GET /api/todos?q= */
+  function beginSearch(query) {
+    var normalized = core.normalizeSearchQuery(query);
+    if (!normalized) {
+      clearSearch();
+      return Promise.resolve();
+    }
+    searchQuery = normalized;
+    searchError = "";
+    // 新关键字从第一页开始
+    visibleLimit = PAGE_SIZE;
+    // q 与 since 互斥:检索期间暂停增量轮询
+    stopPolling();
+    return requestSearch(normalized);
+  }
+
+  function requestSearch(query) {
+    if (!api) return Promise.resolve();
+    var seq = ++searchSeq;
+    searchLoading = true;
+    render();
+
+    return api.searchTodos(query).then(function (items) {
+      // 只采纳「序号最新 + 关键字仍一致 + 仍处于登录态」的响应
+      if (seq !== searchSeq) return;
+      if (query !== searchQuery || !isLoggedIn()) return;
+      applySearchResults(items);
+    }).catch(function (err) {
+      if (seq !== searchSeq) return;
+      if (query !== searchQuery || !isLoggedIn()) return;
+      console.error("搜索待办失败:", err);
+      searchLoading = false;
+      searchError = (err && err.message) || "请求失败";
+      render();
+    });
+  }
+
+  /**
+   * 原子采纳检索结果:todos 与 lastSynced 来自同一响应,保持一致。
+   * 这样后续写入只会为「结果集里本地已删除」的条目发 DELETE,
+   * 未命中关键字的服务端条目不会因为不在本地而遭到误删。
+   */
+  function applySearchResults(items) {
+    var clean = core.sanitizeItems(items);
+    todos = clean;
+    lastSynced = clean.map(cloneItem);
+    lastSyncAt = 0;
+    visibleLimit = PAGE_SIZE;
+    searchLoading = false;
+    searchError = "";
+    render();
+  }
+
+  /** 写队列排空后重新检索,让新建/改名/删除立即反映到结果集 */
+  function scheduleSearchRefresh() {
+    if (!isSearching() || !isLoggedIn()) return;
+    if (searchRefreshTimer != null) window.clearTimeout(searchRefreshTimer);
+    searchRefreshTimer = window.setTimeout(function () {
+      searchRefreshTimer = null;
+      if (!isSearching() || !isLoggedIn()) return;
+      requestSearch(searchQuery);
+    }, 0);
+    if (searchRefreshTimer && typeof searchRefreshTimer.unref === "function") {
+      searchRefreshTimer.unref();
+    }
+  }
+
+  /**
+   * 退出搜索态并恢复全量列表:发起不带 q 的 GET(loadTodos),
+   * 同时重置 searchQuery / lastSyncAt 并恢复增量轮询。
+   */
+  function clearSearch() {
+    var wasSearching = isSearching();
+    cancelSearchTimers();
+    searchSeq += 1; // 作废在途检索响应
+    searchQuery = "";
+    searchLoading = false;
+    searchError = "";
+    searchComposing = false;
+    if (searchInput) searchInput.value = "";
+    syncSearchClearButton();
+
+    if (!wasSearching || !isLoggedIn()) {
+      render();
+      return Promise.resolve();
+    }
+
+    return loadTodos().then(function () {
+      if (isLoggedIn()) startPolling();
+      return undefined;
+    });
+  }
+
   /* ---------- 事件绑定 ---------- */
 
   form.addEventListener("submit", function (e) {
@@ -1201,6 +1427,51 @@
     });
   }
 
+  if (searchInput) {
+    searchInput.addEventListener("input", function () {
+      // 输入法组合期间(如中文候选词)不检索,确认后再统一处理
+      if (searchComposing) return;
+      syncSearchClearButton();
+      scheduleSearch();
+    });
+
+    searchInput.addEventListener("compositionstart", function () {
+      searchComposing = true;
+    });
+
+    searchInput.addEventListener("compositionend", function () {
+      searchComposing = false;
+      syncSearchClearButton();
+      scheduleSearch();
+    });
+
+    searchInput.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") {
+        // Esc 清除搜索并恢复全量列表
+        if (typeof e.preventDefault === "function") e.preventDefault();
+        clearSearch();
+        return;
+      }
+      if (e.key === "Enter") {
+        // 候选词确认时的回车不触发检索
+        if (searchComposing || e.isComposing || e.keyCode === 229) return;
+        if (typeof e.preventDefault === "function") e.preventDefault();
+        if (searchTimer != null) {
+          window.clearTimeout(searchTimer);
+          searchTimer = null;
+        }
+        runSearchFromInput();
+      }
+    });
+  }
+
+  if (searchClearBtn) {
+    searchClearBtn.addEventListener("click", function () {
+      clearSearch();
+      if (searchInput && typeof searchInput.focus === "function") searchInput.focus();
+    });
+  }
+
   loginForm.addEventListener("submit", function (e) {
     e.preventDefault();
     clearError();
@@ -1249,6 +1520,7 @@
     api.logout().catch(function () {
       // 即使服务端失败也退出登录
     }).then(function () {
+      resetSearchState();
       todos = [];
       lastSynced = [];
       lastSyncAt = 0;
@@ -1261,6 +1533,7 @@
   /* ---------- 会话失效:统一 401 处理,清 token 回登录页 ---------- */
   if (api) {
     api.onUnauthorized = function () {
+      resetSearchState();
       todos = [];
       lastSynced = [];
       lastSyncAt = 0;

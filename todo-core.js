@@ -207,6 +207,25 @@
     }
   }
 
+  /** 归一化搜索关键字:null/undefined 视为空串,并去掉首尾空白 */
+  function normalizeSearchQuery(value) {
+    return value == null ? "" : String(value).trim();
+  }
+
+  /**
+   * 判断文本是否命中关键字,语义与后端 GET /api/todos?q= 保持一致:
+   *  - 英文大小写不敏感
+   *  - 子串匹配,不做分词
+   *  - % 与 _ 按字面量处理(使用 indexOf 而非正则/SQL LIKE 通配)
+   *  - 空关键字命中所有条目(等价于不检索)
+   */
+  function matchesKeyword(text, keyword) {
+    var query = normalizeSearchQuery(keyword);
+    if (!query) return true;
+    var haystack = (text == null ? "" : String(text)).toLowerCase();
+    return haystack.indexOf(query.toLowerCase()) !== -1;
+  }
+
   /**
    * 校验并清洗从存储读到的数据。
    * 非数组、含非法项时丢弃非法项;合法项补齐默认优先级,
@@ -234,10 +253,22 @@
    * 计算空状态提示文案。
    * 视图(即筛后的可见列表)非空时返回 null(不显示空状态);
    * 否则据数据与筛选返回对应提示,区分"完全无待办"与"筛选无匹配"。
+   * 传入 keyword 时按搜索语境措辞(搜索结果为空 / 结果集被筛选收窄)。
    */
-  function getEmptyStateText(todos, filter) {
+  function getEmptyStateText(todos, filter, keyword) {
+    var query = normalizeSearchQuery(keyword);
+    var list = Array.isArray(todos) ? todos : [];
+
+    if (getVisibleTodos(list, filter).length > 0) return null;
+
+    if (query) {
+      if (list.length === 0) return "没有找到包含「" + query + "」的待办 🔍";
+      if (filter === FILTERS.ACTIVE) return "匹配「" + query + "」的待办都已完成 🎉";
+      if (filter === FILTERS.COMPLETED) return "匹配「" + query + "」的待办中还没有已完成的";
+      return "没有找到包含「" + query + "」的待办 🔍";
+    }
+
     if (!Array.isArray(todos)) return "暂无待办,添加一条开始吧 ✨";
-    if (getVisibleTodos(todos, filter).length > 0) return null;
     if (todos.length === 0) return "暂无待办,添加一条开始吧 ✨";
     if (filter === FILTERS.ACTIVE) return "没有未完成的待办 🎉";
     if (filter === FILTERS.COMPLETED) return "还没有已完成的待办 💪";
@@ -304,6 +335,8 @@
     getStats: getStats,
     clearCompleted: clearCompleted,
     getVisibleTodos: getVisibleTodos,
+    normalizeSearchQuery: normalizeSearchQuery,
+    matchesKeyword: matchesKeyword,
     getVisiblePage: getVisiblePage,
     getPaginationState: getPaginationState,
     sanitizeItems: sanitizeItems,

@@ -575,3 +575,50 @@ test("sanitizeItems 为缺失/非法 priority 的数据补默认「普通」", (
 
   assert.deepEqual(clean.map((t) => t.priority), [1, 1, 2]);
 });
+
+/* ---------- 关键字搜索(与前/后端一致的字面量语义) ---------- */
+
+test("matchesKeyword:大小写不敏感、子串匹配,空关键字命中全部", () => {
+  assert.equal(core.matchesKeyword("Buy Milk", "buy"), true);
+  assert.equal(core.matchesKeyword("buy milk", "MILK"), true);
+  assert.equal(core.matchesKeyword("买牛奶", "牛奶"), true);
+  assert.equal(core.matchesKeyword("买牛奶", "面包"), false);
+  assert.equal(core.matchesKeyword("任意文本", ""), true);
+  assert.equal(core.matchesKeyword("任意文本", "   "), true);
+  assert.equal(core.matchesKeyword(null, "x"), false);
+});
+
+test("matchesKeyword:% 与 _ 按字面量匹配,不当作通配符", () => {
+  assert.equal(core.matchesKeyword("50% off", "50%"), true);
+  assert.equal(core.matchesKeyword("50X off", "50%"), false);
+  assert.equal(core.matchesKeyword("a_b", "a_b"), true);
+  assert.equal(core.matchesKeyword("axb", "a_b"), false);
+});
+
+test("normalizeSearchQuery 去掉首尾空白,null/undefined 视为空串", () => {
+  assert.equal(core.normalizeSearchQuery("  买牛奶  "), "买牛奶");
+  assert.equal(core.normalizeSearchQuery("   "), "");
+  assert.equal(core.normalizeSearchQuery(null), "");
+  assert.equal(core.normalizeSearchQuery(undefined), "");
+});
+
+test("getEmptyStateText 在搜索语境下返回含关键字的专用文案", () => {
+  const todos = makeTodos([{ id: "a", text: "买牛奶" }]);
+
+  // 命中集被筛选收窄
+  assert.equal(
+    core.getEmptyStateText([], core.FILTERS.ALL, "面包"),
+    "没有找到包含「面包」的待办 🔍"
+  );
+  assert.equal(
+    core.getEmptyStateText([{ id: "a", text: "买牛奶", completed: true }], core.FILTERS.ACTIVE, "牛奶"),
+    "匹配「牛奶」的待办都已完成 🎉"
+  );
+  assert.equal(
+    core.getEmptyStateText([{ id: "a", text: "买牛奶", completed: false }], core.FILTERS.COMPLETED, "牛奶"),
+    "匹配「牛奶」的待办中还没有已完成的"
+  );
+
+  // 视图非空时不显示空状态
+  assert.equal(core.getEmptyStateText(todos, core.FILTERS.ALL, "牛奶"), null);
+});

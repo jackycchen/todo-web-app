@@ -128,3 +128,24 @@ test("登出时即使服务端失败也会清除会话标志", async () => {
   assert.equal(fetchCalls[1].url, "http://test/api/logout");
   assert.equal(fetchCalls[1].init.credentials, "same-origin");
 });
+
+test("searchTodos 只发送 q 参数并做 URL 编码,不与 since 混用", async () => {
+  global.__response = jsonResponse(200, []);
+  await TodoApi.searchTodos("买 牛奶&%_");
+
+  const call = fetchCalls[0];
+  assert.equal(
+    call.url,
+    "http://test/api/todos?q=" + encodeURIComponent("买 牛奶&%_"),
+    "关键字必须整体 URL 编码"
+  );
+  assert.ok(!/[?&]since=/.test(call.url), "q 与 since 互斥,检索不得携带 since");
+  assert.equal(call.init.method, "GET");
+  assert.equal(call.init.credentials, "same-origin");
+});
+
+test("searchTodos 空白关键字等价于请求全量列表", async () => {
+  global.__response = jsonResponse(200, []);
+  await TodoApi.searchTodos("   ");
+  assert.equal(fetchCalls[0].url, "http://test/api/todos");
+});

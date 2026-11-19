@@ -89,6 +89,20 @@
         <button type="button" id="filter-tab-completed" class="filter-btn" data-filter="completed" role="tab" aria-selected="false" aria-controls="todo-panel" tabindex="-1">已完成</button>
       </div>
 
+      <div class="search-bar" role="search">
+        <input
+          type="search"
+          id="todo-search"
+          class="todo-search"
+          placeholder="搜索待办关键字"
+          aria-label="搜索待办关键字"
+          maxlength="200"
+          autocomplete="off"
+        >
+        <button type="button" id="search-clear-btn" class="search-clear-btn" aria-label="清除搜索" title="清除搜索" hidden>×</button>
+      </div>
+      <p id="search-status" class="search-status" role="status" aria-live="polite"></p>
+
       <div class="list-toolbar">
         <p id="remaining-count" class="remaining-count" role="status" aria-live="polite" aria-atomic="true">
           还剩 <strong id="remaining-count-number">0</strong> 项未完成
