@@ -161,6 +161,7 @@ const INITIAL_HIDDEN = {
   "auth-error": true,
   "empty-state": true,
   "clear-status": true,
+  "search-clear-btn": true,
 };
 
 const elements = {};
@@ -266,6 +267,7 @@ before(async () => {
   global.localStorage = localStorageShim;
   global.window.TODO_API_BASE = base;
   global.window.TODO_POLL_INTERVAL_MS = 150; // 测试中缩短轮询间隔
+  global.window.TODO_SEARCH_DEBOUNCE_MS = 0; // 搜索输入不等待防抖
   global.window.localStorage = localStorageShim;
   global.window.matchMedia = () => ({ matches: false });
   installCookieAwareFetch();
@@ -349,6 +351,35 @@ async function registerAndSeed(username, texts) {
     submitForm("todo-form");
     await flush();
   }
+}
+
+/** 在搜索框输入关键字并触发 input 事件(防抖已设为 0) */
+function typeSearch(value) {
+  const el = getElement("todo-search");
+  el.value = value;
+  el.handlers.input[0]({});
+}
+
+/** 按 Esc 键清除搜索 */
+function escapeSearch() {
+  const el = getElement("todo-search");
+  el.handlers.keydown[0]({ key: "Escape", preventDefault() {} });
+}
+
+/** 包一层 fetch,记录期间发出的请求 URL(用于验证 q/since 互斥) */
+function recordRequests() {
+  const realFetch = global.fetch;
+  const urls = [];
+  global.fetch = function (url, opts) {
+    urls.push(String(url));
+    return realFetch(url, opts);
+  };
+  return {
+    urls,
+    restore() {
+      global.fetch = realFetch;
+    },
+  };
 }
 
 /** 双击第 index 条待办的文本,返回列表项与编辑输入框 */
@@ -985,4 +1016,264 @@ test("保存后按服务端确认的 createdAt 重排,避免刷新前后顺序�
   } finally {
     global.fetch = realFetch;
   }
+});
+
+/* ---------- 关键字搜索 ---------- */
+
+test("关键字搜索:与三态筛选组合、无结果专用空状态、清空恢复全量", async () => {
+  await registerAndSeed("noah", ["买牛奶", "写代码", "买面包"]);
+  assert.deepEqual(renderedItems().map((i) => i.text), ["买牛奶", "写代码", "买面包"]);
+  assert.equal(getElement("search-clear-btn").hidden, true, "未搜索时不显示清除按钮");
+
+  // 输入非空关键字:检索命中项,统计按结果集口径
+  typeSearch("买");
+  await flush();
+  assert.deepEqual(renderedItems().map((i) => i.text), ["买牛奶", "买面包"]);
+  assert.equal(getElement("search-clear-btn").hidden, false);
+  assert.match(getElement("search-status").textContent, /找到 2 项匹配「买」/);
+  assert.equal(getElement("stats-total").textContent, "2", "搜索态统计按结果集展示");
+
+  // 与三态筛选 AND 组合:已完成标签下暂无命中项
+  filterBtns[2].handlers.click[0]();
+  assert.equal(getElement("todo-list").children.length, 0);
+  assert.equal(getElement("empty-state").hidden, false);
+  assert.equal(getElement("empty-state-title").textContent, "没有匹配的待办");
+  assert.match(getElement("empty-state-text").textContent, /匹配「买」/);
+  assert.equal(getElement("empty-state-action").hidden, true, "搜索态不提供添加引导");
+  assert.equal(getElement("list-pagination").hidden, true);
+
+  filterBtns[1].handlers.click[0](); // 进行中:两条都匹配
+  assert.equal(getElement("todo-list").children.length, 2);
+
+  // 完成一条后,已完成筛选下只显示该条
+  filterBtns[0].handlers.click[0]();
+  clickCheckbox(0); // 买牛奶
+  await flush();
+  filterBtns[2].handlers.click[0]();
+  assert.deepEqual(renderedItems().map((i) => i.text), ["买牛奶"]);
+  filterBtns[0].handlers.click[0]();
+
+  // 无结果:展示含关键字的专用空状态,隐藏添加入口与分页
+  typeSearch("不存在的关键字");
+  await flush();
+  assert.equal(getElement("todo-list").children.length, 0);
+  assert.equal(getElement("empty-state-title").textContent, "没有匹配的待办");
+  assert.match(getElement("empty-state-text").textContent, /不存在的关键字/);
+  assert.equal(getElement("empty-state-action").hidden, true);
+  assert.equal(getElement("list-pagination").hidden, true);
+
+  // 清除按钮:发起不带 q 的 GET,恢复全量列表
+  getElement("search-clear-btn").handlers.click[0]();
+  await flush();
+  assert.deepEqual(renderedItems().map((i) => i.text), ["买牛奶", "写代码", "买面包"]);
+  assert.equal(getElement("todo-search").value, "");
+  assert.equal(getElement("search-clear-btn").hidden, true);
+  assert.equal(getElement("search-status").textContent, "");
+  assert.equal(getElement("stats-total").textContent, "3");
+});
+
+test("关键字搜索:清空请求不带 q,纯空白与 Esc 等价于清空", async () => {
+  assert.ok(window.TodoApi.hasSession(), "应处于登录态");
+
+  // 清除按钮
+  typeSearch("买");
+  await flush();
+  assert.equal(getElement("todo-list").children.length, 2);
+
+  let rec = recordRequests();
+  try {
+    getElement("search-clear-btn").handlers.click[0]();
+    await flush();
+  } finally {
+    rec.restore();
+  }
+  assert.ok(
+    rec.urls.some((u) => /\/api\/todos$/.test(u)),
+    "清空搜索应请求不带 q 的全量列表"
+  );
+  assert.ok(!rec.urls.some((u) => /[?&]q=/.test(u)), "清空请求不应带 q");
+  assert.ok(!rec.urls.some((u) => /[?&]since=/.test(u)), "清空请求不应带 since");
+  assert.deepEqual(renderedItems().map((i) => i.text), ["买牛奶", "写代码", "买面包"]);
+
+  // Esc 清除
+  typeSearch("代码");
+  await flush();
+  assert.deepEqual(renderedItems().map((i) => i.text), ["写代码"]);
+  escapeSearch();
+  await flush();
+  assert.equal(getElement("todo-search").value, "");
+  assert.deepEqual(renderedItems().map((i) => i.text), ["买牛奶", "写代码", "买面包"]);
+
+  // 纯空白等价于清空
+  typeSearch("买");
+  await flush();
+  assert.equal(getElement("todo-list").children.length, 2);
+  typeSearch("   ");
+  await flush();
+  assert.equal(getElement("todo-search").value, "");
+  assert.deepEqual(renderedItems().map((i) => i.text), ["买牛奶", "写代码", "买面包"]);
+});
+
+test("关键字搜索:q 与 since 互斥,搜索期间暂停轮询,清空后恢复", async () => {
+  assert.ok(window.TodoApi.hasSession(), "应处于登录态");
+  typeSearch("买");
+  await flush();
+  assert.equal(getElement("todo-list").children.length, 2);
+
+  let rec = recordRequests();
+  try {
+    // 轮询间隔 150ms,搜索态下等待多轮均不应出现 since 请求
+    await new Promise((r) => setTimeout(r, 500));
+    assert.equal(
+      rec.urls.filter((u) => /[?&]since=/.test(u)).length,
+      0,
+      "搜索期间不应发出 since 轮询请求"
+    );
+    assert.equal(
+      rec.urls.filter((u) => /[?&]q=/.test(u)).length,
+      0,
+      "关键字未变化时不应重复检索"
+    );
+
+    // 切换筛选只影响本地投影,不重新请求
+    filterBtns[1].handlers.click[0]();
+    filterBtns[2].handlers.click[0]();
+    filterBtns[0].handlers.click[0]();
+    await flush();
+    assert.equal(
+      rec.urls.filter((u) => /[?&]q=/.test(u)).length,
+      0,
+      "切换筛选不应重新请求"
+    );
+  } finally {
+    rec.restore();
+  }
+
+  // 清空后恢复增量轮询
+  let rec2 = recordRequests();
+  try {
+    getElement("search-clear-btn").handlers.click[0]();
+    await new Promise((r) => setTimeout(r, 500));
+  } finally {
+    rec2.restore();
+  }
+  assert.ok(
+    rec2.urls.some((u) => /[?&]since=/.test(u)),
+    "清空搜索后应恢复 since 增量轮询"
+  );
+
+  // 任何请求都不会同时携带 q 与 since
+  const both = [...rec.urls, ...rec2.urls].filter(
+    (u) => /[?&]q=/.test(u) && /[?&]since=/.test(u)
+  );
+  assert.deepEqual(both, []);
+});
+
+test("关键字搜索:搜索态写入不误删未命中项,清除已完成只删命中项", async () => {
+  await registerAndSeed("olivia", ["苹果", "香蕉", "牛奶"]);
+  typeSearch("苹果");
+  await flush();
+  assert.deepEqual(renderedItems().map((i) => i.text), ["苹果"]);
+
+  // 搜索态下新建:一条命中、一条不命中
+  fillInput("todo-input", "苹果派");
+  submitForm("todo-form");
+  await new Promise((r) => setTimeout(r, 300));
+  fillInput("todo-input", "整理房间");
+  submitForm("todo-form");
+  await new Promise((r) => setTimeout(r, 300));
+
+  // 结果集只保留命中项;未命中的新条目仍存在于服务端(没有误删)
+  assert.deepEqual(renderedItems().map((i) => i.text), ["苹果", "苹果派"]);
+  let serverList = await (await fetch(`${base}/api/todos`)).json();
+  assert.deepEqual(
+    serverList.map((t) => t.text).sort(),
+    ["苹果", "苹果派", "整理房间", "香蕉", "牛奶"].sort(),
+    "未命中关键字的条目不应因搜索而被删除"
+  );
+
+  // 编辑命中项使其不再命中:结果集移除,服务端仍可查到新文本
+  const { editor } = startEditing(0); // 苹果
+  editor.value = "西瓜";
+  editor.handlers.input[0]({});
+  editor.handlers.blur[0]({});
+  await new Promise((r) => setTimeout(r, 400));
+
+  assert.deepEqual(renderedItems().map((i) => i.text), ["苹果派"]);
+  serverList = await (await fetch(`${base}/api/todos`)).json();
+  assert.deepEqual(
+    serverList.map((t) => t.text).sort(),
+    ["苹果派", "整理房间", "西瓜", "香蕉", "牛奶"].sort(),
+    "改名后服务端保留新文本,不应触发 DELETE"
+  );
+
+  // 清除已完成:仅删除命中关键字且已完成的条目
+  await registerAndSeed("paul", ["买牛奶", "买面包", "写代码"]);
+  clickCheckbox(0);
+  await flush();
+  clickCheckbox(1);
+  await flush();
+  clickCheckbox(2);
+  await flush();
+  assert.equal(getElement("stats-completed").textContent, "3");
+
+  typeSearch("买");
+  await flush();
+  assert.deepEqual(renderedItems().map((i) => i.text), ["买牛奶", "买面包"]);
+  assert.equal(getElement("clear-completed-btn").disabled, false);
+
+  const clearBtn = getElement("clear-completed-btn");
+  clearBtn.handlers.click[0](); // 进入二次确认
+  clearBtn.handlers.click[0](); // 真正清除
+  await new Promise((r) => setTimeout(r, 400));
+
+  assert.equal(getElement("todo-list").children.length, 0, "命中且已完成的条目应被清除");
+  serverList = await (await fetch(`${base}/api/todos`)).json();
+  assert.deepEqual(
+    serverList.map((t) => t.text),
+    ["写代码"],
+    "未命中关键字的已完成条目必须保留"
+  );
+});
+
+test("关键字搜索:快速连续输入只采纳最后一次关键字(过期响应被丢弃)", async () => {
+  await registerAndSeed("quinn", ["苹果", "代码"]);
+
+  const realFetch = global.fetch;
+  let releaseApple;
+  const appleGate = new Promise((resolve) => {
+    releaseApple = resolve;
+  });
+  const appleQuery = encodeURIComponent("苹果");
+
+  // 挂起第一条(苹果)检索请求的响应,模拟网络乱序
+  global.fetch = function (url, opts) {
+    const target = String(url);
+    const result = realFetch(url, opts);
+    if (/[?&]q=/.test(target) && target.includes(appleQuery)) {
+      return result.then((res) => appleGate.then(() => res));
+    }
+    return result;
+  };
+
+  try {
+    typeSearch("苹果");
+    await new Promise((r) => setTimeout(r, 60)); // 请求已发出但未返回
+    typeSearch("代码");
+    await flush();
+    assert.deepEqual(renderedItems().map((i) => i.text), ["代码"]);
+
+    // 释放过期响应:不应覆盖最新关键字的结果
+    releaseApple();
+    await new Promise((r) => setTimeout(r, 200));
+    assert.deepEqual(renderedItems().map((i) => i.text), ["代码"]);
+    assert.match(getElement("search-status").textContent, /「代码」/);
+  } finally {
+    releaseApple();
+    global.fetch = realFetch;
+  }
+
+  // 收尾:清空搜索,避免影响后续用例
+  getElement("search-clear-btn").handlers.click[0]();
+  await flush();
 });
