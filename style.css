@@ -249,6 +249,37 @@ body {
   margin-bottom: 0;
 }
 
+/* 关键字搜索:与标签同一工具栏,宽度随容器自适应 */
+.search-box {
+  display: flex;
+}
+
+.todo-search {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 14px;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.todo-search::placeholder {
+  color: var(--text-muted);
+}
+
+.todo-search:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.todo-search::-webkit-search-cancel-button {
+  cursor: pointer;
+}
+
 .list-toolbar {
   display: flex;
   flex-wrap: wrap;
