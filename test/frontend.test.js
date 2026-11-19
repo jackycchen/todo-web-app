@@ -290,7 +290,17 @@ after(async () => {
   }
 });
 
-const flush = () => new Promise((r) => setTimeout(r, 120));
+const flush = () => new Promise((r) => setTimeout(r, 250));
+
+/** 轮询等待某个条件成立,避免依赖固定延时导致用例在繁忙环境下偶发失败 */
+async function waitFor(predicate, message = "等待条件超时", timeoutMs = 4000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (predicate()) return;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  assert.fail(message);
+}
 
 // ---------- 页面交互辅助 ----------
 function fillInput(id, value) {
@@ -349,6 +359,86 @@ async function registerAndSeed(username, texts) {
     submitForm("todo-form");
     await flush();
   }
+}
+
+/** 在搜索框输入并触发 input 事件(等价于真实浏览器逐字输入/粘贴) */
+function typeSearch(value) {
+  const input = getElement("todo-search");
+  input.value = value;
+  input.handlers.input[0]({});
+}
+
+/** 在搜索框按回车;返回是否被 preventDefault(应吞掉回车避免提交外层表单) */
+function pressSearchEnter() {
+  let prevented = false;
+  getElement("todo-search").handlers.keydown[0]({
+    key: "Enter",
+    preventDefault() {
+      prevented = true;
+    },
+  });
+  return prevented;
+}
+
+/** 等待超过默认 250ms 搜索防抖 */
+const waitSearch = (ms = 400) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * 通过 API 创建独立用户与种子数据,再经页面登录一次性加载。
+ * 相比「注册后逐条通过表单新增」,少了一次 loadTodos 与本地新增的竞态,
+ * 让搜索用例只依赖可观测的渲染结果。
+ */
+async function seedUser(username, texts) {
+  const password = "secret1234567";
+  const reg = await fetch(`${base}/api/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  assert.equal(reg.status, 201, `API 注册 ${username} 应成功`);
+
+  for (const text of texts) {
+    const res = await fetch(`${base}/api/todos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    assert.equal(res.status, 201);
+  }
+
+  clickTab(0);
+  fillInput("login-username", username);
+  fillInput("login-password", password);
+  submitForm("login-form");
+
+  const expectedPage = texts.slice(0, Math.min(20, texts.length));
+  await waitFor(() => {
+    if (getElement("current-user").textContent !== username) return false;
+    const shown = renderedItems().map((i) => i.text);
+    return (
+      shown.length === expectedPage.length &&
+      shown.every((text, i) => text === expectedPage[i])
+    );
+  }, `用户 ${username} 的待办应在登录后渲染`);
+}
+
+/** 记录所有请求 URL,用于验证 q / since 互斥与"清空不发请求" */
+function recordFetchUrls() {
+  const realFetch = global.fetch;
+  const urls = [];
+  global.fetch = function (url, opts) {
+    urls.push(String(url));
+    return realFetch(url, opts);
+  };
+  return {
+    urls,
+    restore() {
+      global.fetch = realFetch;
+    },
+    qRequests() {
+      return urls.filter((u) => u.includes("/api/todos?") && u.includes("q="));
+    },
+  };
 }
 
 /** 双击第 index 条待办的文本,返回列表项与编辑输入框 */
@@ -985,4 +1075,249 @@ test("保存后按服务端确认的 createdAt 重排,避免刷新前后顺序�
   } finally {
     global.fetch = realFetch;
   }
+});
+
+/* ---------- 关键字搜索 ---------- */
+
+test("关键字搜索:输入即检索,与三态筛选组合,清空恢复全量列表", async () => {
+  await seedUser("kate", ["买牛奶", "写代码", "买咖啡", "跑步"]);
+  assert.deepEqual(renderedItems().map((i) => i.text), ["买牛奶", "写代码", "买咖啡", "跑步"]);
+
+  const recorder = recordFetchUrls();
+  try {
+    typeSearch("买");
+
+    // 防抖期内(默认 250ms)不应发请求;轮询请求不带 q,不计入
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(recorder.qRequests().length, 0, "防抖期内不应立即发起检索");
+
+    await waitFor(
+      () => renderedItems().map((i) => i.text).join("|") === "买牛奶|买咖啡",
+      "防抖结束后应渲染命中项"
+    );
+    assert.equal(recorder.qRequests().length, 1);
+    assert.match(recorder.qRequests()[0], new RegExp(`q=${encodeURIComponent("买")}(&|$)`));
+
+    // 全局统计口径不随搜索收窄
+    assert.equal(getElement("stats-total").textContent, "4");
+    assert.equal(getElement("remaining-count-number").textContent, "4");
+
+    // 搜索 × 「进行中」:命中项均为未完成,组合后仍是两条
+    filterBtns[1].handlers.click[0]();
+    assert.deepEqual(renderedItems().map((i) => i.text), ["买牛奶", "买咖啡"]);
+
+    // 搜索 × 「已完成」:无命中,展示搜索语境空状态且不显示添加引导
+    filterBtns[2].handlers.click[0]();
+    assert.equal(getElement("todo-list").children.length, 0);
+    assert.equal(getElement("empty-state").hidden, false);
+    assert.equal(getElement("empty-state-title").textContent, "当前筛选下没有匹配的待办");
+    assert.match(getElement("empty-state-text").textContent, /买/);
+    assert.equal(getElement("empty-state-action").hidden, true);
+
+    // 回到「全部」后清空搜索:不发送请求,直接恢复内存中的全量列表
+    filterBtns[0].handlers.click[0]();
+    const qBeforeClear = recorder.qRequests().length;
+
+    typeSearch("   ");
+    assert.deepEqual(
+      renderedItems().map((i) => i.text),
+      ["买牛奶", "写代码", "买咖啡", "跑步"],
+      "纯空白关键字立即恢复普通列表"
+    );
+
+    typeSearch("");
+    await waitSearch();
+    assert.deepEqual(
+      renderedItems().map((i) => i.text),
+      ["买牛奶", "写代码", "买咖啡", "跑步"]
+    );
+    assert.equal(recorder.qRequests().length, qBeforeClear, "清空搜索不应发起任何检索请求");
+  } finally {
+    recorder.restore();
+  }
+});
+
+test("关键字搜索:回车立即检索,q 与 since 互斥,搜索态写操作不影响未命中项", async () => {
+  await seedUser("liam", ["苹果", "香蕉", "苹果派"]);
+
+  const recorder = recordFetchUrls();
+  try {
+    typeSearch("苹果");
+    // 回车不等防抖;150ms < 250ms 防抖,此时已发请求说明是回车触发的
+    assert.equal(pressSearchEnter(), true, "回车应被搜索框拦截");
+    await new Promise((r) => setTimeout(r, 150));
+    assert.equal(recorder.qRequests().length, 1, "回车应立即发起检索,不等防抖");
+    await waitFor(
+      () => renderedItems().map((i) => i.text).join("|") === "苹果|苹果派",
+      "回车检索结果应渲染"
+    );
+
+    const qUrls = recorder.qRequests();
+    assert.equal(qUrls.length, 1);
+    assert.match(qUrls[0], new RegExp(`q=${encodeURIComponent("苹果")}(&|$)`));
+
+    // 任何请求都不得同时携带 q 与 since(检索是全量语义)
+    for (const url of recorder.urls) {
+      assert.ok(
+        !(url.includes("q=") && url.includes("since=")),
+        `请求不应同时携带 q 与 since: ${url}`
+      );
+    }
+
+    // ---------- 搜索态下的写操作 ----------
+    // 删除一条命中项:只删这一条,未命中的「香蕉」不受影响
+    clickDelete(0); // 苹果
+    await flush();
+    assert.deepEqual(renderedItems().map((i) => i.text), ["苹果派"]);
+
+    // 新增一条未命中当前关键字的待办:服务端应真实创建,但当前搜索视图不展示它
+    fillInput("todo-input", "苹果汁");
+    submitForm("todo-form");
+    await flush();
+    assert.deepEqual(
+      renderedItems().map((i) => i.text),
+      ["苹果派"],
+      "新增未命中项不进入当前搜索视图"
+    );
+
+    // 勾选命中项:只改这一条
+    clickCheckbox(0); // 苹果派
+    await flush();
+    assert.equal(renderedItems()[0].completed, true);
+
+    // 编辑命中项:改的是全量数据里的同一条
+    const { editor } = startEditing(0);
+    editor.value = "苹果派改名";
+    editor.handlers.blur[0]({});
+    await flush();
+    assert.deepEqual(renderedItems().map((i) => i.text), ["苹果派改名"]);
+
+    // 清空搜索:恢复全量列表,未命中项(香蕉/苹果汁)完好且状态正确
+    typeSearch("");
+    assert.deepEqual(
+      renderedItems(),
+      [
+        { text: "香蕉", completed: false },
+        { text: "苹果派改名", completed: true },
+        { text: "苹果汁", completed: false },
+      ],
+      "搜索态写操作不得误删或覆盖未命中项"
+    );
+
+    const serverList = await (await fetch(`${base}/api/todos`)).json();
+    assert.deepEqual(
+      serverList.map((t) => ({ text: t.text, completed: !!t.completed })),
+      [
+        { text: "香蕉", completed: false },
+        { text: "苹果派改名", completed: true },
+        { text: "苹果汁", completed: false },
+      ]
+    );
+  } finally {
+    recorder.restore();
+  }
+});
+
+test("关键字搜索:无匹配空状态、迟到响应丢弃与会话重置", async () => {
+  await seedUser("mia", ["任务一", "任务二", "杂项"]);
+
+  // ---------- 无匹配:搜索专用空状态,隐藏「添加第一个待办」 ----------
+  typeSearch("不存在的关键字");
+  await waitFor(
+    () => getElement("empty-state").hidden === false && getElement("todo-list").children.length === 0,
+    "无匹配时应展示空状态"
+  );
+  assert.equal(getElement("todo-list").children.length, 0);
+  assert.equal(getElement("empty-state").hidden, false);
+  assert.equal(getElement("empty-state-title").textContent, "没有匹配的待办");
+  assert.match(getElement("empty-state-text").textContent, /不存在的关键字/);
+  assert.equal(getElement("empty-state-action").hidden, true);
+  assert.equal(getElement("list-pagination").hidden, true);
+
+  // 清空后恢复三条
+  typeSearch("");
+  assert.equal(getElement("todo-list").children.length, 3);
+  assert.equal(getElement("empty-state").hidden, true);
+
+  // ---------- 迟到的搜索响应必须被丢弃 ----------
+  const realFetch = global.fetch;
+  global.fetch = function (url, opts) {
+    if (String(url).includes("/api/todos?") && String(url).includes("q=")) {
+      // 模拟慢网络:检索请求比用户清空输入更晚返回
+      return new Promise((resolve, reject) => {
+        setTimeout(() => {
+          realFetch(url, opts).then(resolve, reject);
+        }, 250);
+      });
+    }
+    return realFetch(url, opts);
+  };
+  try {
+    typeSearch("任务");
+    await new Promise((r) => setTimeout(r, 420)); // 防抖已过,请求在路上
+    typeSearch(""); // 响应到达前清空搜索
+    await new Promise((r) => setTimeout(r, 700)); // 等迟到响应回来
+    assert.equal(getElement("todo-search").value, "");
+    assert.deepEqual(
+      renderedItems().map((i) => i.text),
+      ["任务一", "任务二", "杂项"],
+      "迟到的检索响应不应重新收窄列表"
+    );
+  } finally {
+    global.fetch = realFetch;
+  }
+
+  // ---------- 登出重置搜索,重新登录后为全量普通列表 ----------
+  typeSearch("任务");
+  await waitFor(
+    () => renderedItems().map((i) => i.text).join("|") === "任务一|任务二",
+    "搜索「任务」应只命中两条"
+  );
+
+  getElement("logout-btn").handlers.click[0]();
+  await flush();
+  assert.equal(getElement("auth-view").hidden, false);
+  assert.equal(getElement("todo-search").value, "", "登出后搜索关键字应被清空");
+
+  clickTab(0);
+  fillInput("login-username", "mia");
+  fillInput("login-password", "secret1234567");
+  submitForm("login-form");
+  await flush();
+  assert.equal(getElement("app-view").hidden, false);
+  assert.equal(getElement("todo-search").value, "", "重新登录后不应恢复上次搜索");
+  assert.deepEqual(
+    renderedItems().map((i) => i.text),
+    ["任务一", "任务二", "杂项"],
+    "重新登录后展示全量列表"
+  );
+});
+
+test("关键字搜索:命中结果沿用每页 20 条分页与加载更多", async () => {
+  const seeds = [];
+  for (let i = 0; i < 26; i++) seeds.push(`目标 ${i}`);
+  await seedUser("nina", seeds);
+  assert.equal(getElement("stats-total").textContent, "26");
+
+  typeSearch("目标");
+  await waitFor(
+    () => getElement("todo-list").children.length === 20 && getElement("list-pagination").hidden === false,
+    "搜索结果应渲染第一页"
+  );
+
+  assert.equal(getElement("todo-list").children.length, 20, "搜索结果默认只渲染一页");
+  assert.equal(getElement("stats-total").textContent, "26", "统计仍为全量口径");
+  assert.equal(getElement("empty-state").hidden, true);
+  assert.equal(getElement("list-pagination").hidden, false);
+  assert.match(getElement("list-status").textContent, /20 \/ 26/);
+  assert.equal(getElement("load-more-btn").hidden, false);
+
+  getElement("load-more-btn").handlers.click[0]();
+  assert.equal(getElement("todo-list").children.length, 26);
+  assert.match(getElement("list-status").textContent, /已全部加载,共 26 项/);
+
+  // 清空搜索:恢复普通列表并从第一页开始
+  typeSearch("");
+  assert.equal(getElement("todo-list").children.length, 20);
+  assert.equal(getElement("stats-total").textContent, "26");
 });

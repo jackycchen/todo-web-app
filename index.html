@@ -89,6 +89,18 @@
         <button type="button" id="filter-tab-completed" class="filter-btn" data-filter="completed" role="tab" aria-selected="false" aria-controls="todo-panel" tabindex="-1">已完成</button>
       </div>
 
+      <div class="search-box">
+        <input
+          type="search"
+          id="todo-search"
+          class="todo-search"
+          placeholder="搜索待办关键字"
+          maxlength="200"
+          aria-label="搜索待办"
+          autocomplete="off"
+        >
+      </div>
+
       <div class="list-toolbar">
         <p id="remaining-count" class="remaining-count" role="status" aria-live="polite" aria-atomic="true">
           还剩 <strong id="remaining-count-number">0</strong> 项未完成

@@ -111,6 +111,16 @@
       }
       return request("/api/todos?since=" + encodeURIComponent(String(since)));
     },
+    /**
+     * 按关键字检索当前用户的待办(服务端 instr 子串匹配,英文大小写不敏感)。
+     * 只发送 q 参数:检索是全量语义,不能与增量同步的 since 同时使用。
+     * 关键字为空时退化为普通全量列表,避免发出 q= 空串这种无意义请求。
+     */
+    searchTodos: function (keyword) {
+      var normalized = keyword == null ? "" : String(keyword).trim();
+      if (!normalized) return request("/api/todos");
+      return request("/api/todos?q=" + encodeURIComponent(normalized));
+    },
     createTodo: function (item) {
       // id / createdAt 由服务端生成,前端只提交用户可控的业务字段。
       // priority 缺省时不提交,由服务端按「普通」处理。

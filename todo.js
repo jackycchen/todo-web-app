@@ -9,6 +9,30 @@
   /** 当前筛选,默认显示全部 */
   var currentFilter = FILTERS.ALL;
 
+  /** 搜索关键字(已 trim);空串表示未搜索,列表直接使用内存中的全量 todos */
+  var searchKeyword = "";
+
+  /**
+   * 搜索命中的待办 id 集合;null 表示未搜索。
+   * todos 始终保留全量数据集,该集合只用于收窄展示范围,
+   * 因此搜索状态下的勾选/新增/编辑/删除不会影响未命中项。
+   */
+  var searchMatchIds = null;
+
+  /** 每次输入或会话重置都会自增,用于丢弃迟到的搜索响应 */
+  var searchEpoch = 0;
+
+  /** 搜索输入防抖计时器 */
+  var searchTimer = null;
+
+  /** 搜索防抖时长(ms):默认 250,可通过 window.TODO_SEARCH_DEBOUNCE_MS 覆盖(测试用) */
+  var configuredSearchDebounce =
+    typeof window !== "undefined" ? Number(window.TODO_SEARCH_DEBOUNCE_MS) : NaN;
+  var SEARCH_DEBOUNCE_MS =
+    Number.isFinite(configuredSearchDebounce) && configuredSearchDebounce >= 0
+      ? configuredSearchDebounce
+      : 250;
+
   /** 完成/淡出过渡时长(ms),需与 style.css 中的过渡时长保持一致 */
   var TRANSITION_MS = 350;
 
@@ -111,6 +135,7 @@
   var remainingCountNumber = document.getElementById("remaining-count-number");
   var clearCompletedBtn = document.getElementById("clear-completed-btn");
   var clearStatus = document.getElementById("clear-status");
+  var searchInput = document.getElementById("todo-search");
 
   /* ---------- 认证 ---------- */
 
@@ -130,6 +155,8 @@
     hideClearStatus();
     // 退出登录后不应在下次进入时恢复上一次的编辑态
     editState = null;
+    // 搜索条件属于会话内的临时状态,登出/401 后一律清空
+    resetSearchState();
     authView.hidden = false;
     appView.hidden = true;
   }
@@ -138,6 +165,8 @@
     authView.hidden = true;
     appView.hidden = false;
     if (currentUser) currentUser.textContent = username || "";
+    // 登录/注册可能切换了账号,不沿用上一个账号的搜索条件
+    resetSearchState();
     return loadTodos().then(function (items) {
       startPolling();
       return items;
@@ -499,10 +528,111 @@
     });
   }
 
+  /* ---------- 关键字搜索 ---------- */
+
+  function normalizeKeyword(raw) {
+    return raw == null ? "" : String(raw).trim();
+  }
+
+  function cancelSearchTimer() {
+    if (searchTimer != null) {
+      window.clearTimeout(searchTimer);
+      searchTimer = null;
+    }
+  }
+
+  /**
+   * 清空搜索条件。不发起任何请求:普通列表直接由内存中的全量 todos 渲染。
+   * searchEpoch 自增,让仍在途中的搜索响应因过期而被丢弃。
+   */
+  function resetSearchState() {
+    searchEpoch += 1;
+    cancelSearchTimer();
+    searchKeyword = "";
+    searchMatchIds = null;
+    visibleLimit = PAGE_SIZE;
+    if (searchInput) searchInput.value = "";
+  }
+
+  /** 应用搜索命中 id 集合;todos 本身保持全量不变 */
+  function applySearchResults(keyword, items) {
+    searchKeyword = keyword;
+    searchMatchIds = new Set();
+    (Array.isArray(items) ? items : []).forEach(function (item) {
+      if (item && typeof item.id === "string") searchMatchIds.add(item.id);
+    });
+    visibleLimit = PAGE_SIZE;
+    render();
+  }
+
+  /**
+   * 发起检索。epoch 是发起时的输入版本:响应回来时若用户已改动输入
+   * (或已登出/重置),该响应属于迟到数据,直接丢弃,避免列表回跳。
+   */
+  function runSearch(keyword, epoch) {
+    if (!api) return;
+    api.searchTodos(keyword).then(function (items) {
+      if (epoch !== searchEpoch) return;
+      if (!isLoggedIn()) return;
+      // 双重校验:输入框内容也已不再是本次关键字时不渲染
+      if (!searchInput || normalizeKeyword(searchInput.value) !== keyword) return;
+      applySearchResults(keyword, items);
+    }).catch(function (err) {
+      if (epoch !== searchEpoch) return;
+      console.error("搜索待办失败:", err);
+    });
+  }
+
+  /** 输入事件:空关键字(含纯空白)不发请求,直接恢复普通列表 */
+  function onSearchInput() {
+    searchEpoch += 1;
+    cancelSearchTimer();
+    var keyword = normalizeKeyword(searchInput ? searchInput.value : "");
+    if (!keyword) {
+      searchKeyword = "";
+      searchMatchIds = null;
+      visibleLimit = PAGE_SIZE;
+      render();
+      return;
+    }
+
+    var epoch = searchEpoch;
+    searchTimer = window.setTimeout(function () {
+      searchTimer = null;
+      runSearch(keyword, epoch);
+    }, SEARCH_DEBOUNCE_MS);
+    if (searchTimer && typeof searchTimer.unref === "function") searchTimer.unref();
+  }
+
+  /** 回车立即检索(不等防抖);输入法组合期的回车用于确认候选词,忽略 */
+  function onSearchKeydown(e) {
+    if (!e || e.key !== "Enter") return;
+    if (e.isComposing || e.keyCode === 229) return;
+    if (typeof e.preventDefault === "function") e.preventDefault();
+
+    cancelSearchTimer();
+    var keyword = normalizeKeyword(searchInput ? searchInput.value : "");
+    if (!keyword) {
+      searchEpoch += 1;
+      searchKeyword = "";
+      searchMatchIds = null;
+      visibleLimit = PAGE_SIZE;
+      render();
+      return;
+    }
+    runSearch(keyword, searchEpoch);
+  }
+
   /* ---------- 渲染 ---------- */
 
   function getVisibleTodos() {
-    return core.getVisibleTodos(todos, currentFilter);
+    var base = todos;
+    if (searchMatchIds) {
+      base = todos.filter(function (t) {
+        return searchMatchIds.has(t.id);
+      });
+    }
+    return core.getVisibleTodos(base, currentFilter);
   }
 
   function render() {
@@ -657,16 +787,26 @@
     emptyState.hidden = false;
     if (emptyStateTitle) emptyStateTitle.textContent = getEmptyStateTitle();
     if (emptyStateHint) {
-      emptyStateHint.textContent =
-        todos.length === 0
-          ? "点击上方输入框,添加你的第一条待办吧 ✨"
-          : core.getEmptyStateText(todos, currentFilter) || "";
+      if (searchMatchIds) {
+        emptyStateHint.textContent =
+          "没有找到包含「" + searchKeyword + "」的待办,换个关键字试试";
+      } else {
+        emptyStateHint.textContent =
+          todos.length === 0
+            ? "点击上方输入框,添加你的第一条待办吧 ✨"
+            : core.getEmptyStateText(todos, currentFilter) || "";
+      }
     }
-    // 只有"完全没有待办"时提供添加引导;筛选无匹配时添加按钮没有意义
-    if (emptyStateAction) emptyStateAction.hidden = todos.length !== 0;
+    if (emptyStateAction) {
+      // 搜索无匹配时引导用户换关键字,而不是添加待办
+      emptyStateAction.hidden = searchMatchIds ? true : todos.length !== 0;
+    }
   }
 
   function getEmptyStateTitle() {
+    if (searchMatchIds) {
+      return searchMatchIds.size === 0 ? "没有匹配的待办" : "当前筛选下没有匹配的待办";
+    }
     if (todos.length === 0) return "还没有待办事项";
     if (currentFilter === FILTERS.ACTIVE) return "全部完成啦";
     if (currentFilter === FILTERS.COMPLETED) return "还没有已完成的事项";
@@ -774,6 +914,15 @@
     render();
   }
 
+  /** 某条待办是否符合「搜索命中 + 当前筛选」的展示条件 */
+  function isTodoInCurrentView(todo) {
+    if (!todo) return false;
+    if (searchMatchIds && !searchMatchIds.has(todo.id)) return false;
+    if (currentFilter === FILTERS.ACTIVE) return !todo.completed;
+    if (currentFilter === FILTERS.COMPLETED) return !!todo.completed;
+    return true;
+  }
+
   function toggleTodo(id) {
     var next = core.toggleTodo(todos, id);
     if (next === todos) return; // id 不存在,无变化
@@ -803,9 +952,7 @@
     }
 
     // 切换后不再匹配当前筛选(如"未完成"下勾选)时,过渡结束后移出视图
-    var staysInView = core.getVisibleTodos(todos, currentFilter).some(function (t) {
-      return t.id === toggled.id;
-    });
+    var staysInView = isTodoInCurrentView(toggled);
     if (!staysInView) {
       li.classList.add("is-leaving");
       window.setTimeout(function () {
@@ -1184,6 +1331,15 @@
     });
     btn.addEventListener("keydown", onFilterKeydown);
   });
+
+  if (searchInput) {
+    // 输入即检索(防抖);回车立即生效。
+    // type=search 的原生清除按钮在各浏览器分别触发 input / search 事件,
+    // 两者都接上以确保清空后立刻恢复普通列表。
+    searchInput.addEventListener("input", onSearchInput);
+    searchInput.addEventListener("search", onSearchInput);
+    searchInput.addEventListener("keydown", onSearchKeydown);
+  }
 
   if (clearCompletedBtn) {
     clearCompletedBtn.addEventListener("click", onClearCompletedClick);
