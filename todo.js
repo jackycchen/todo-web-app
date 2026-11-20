@@ -9,6 +9,12 @@
   /** 当前筛选,默认显示全部 */
   var currentFilter = FILTERS.ALL;
 
+  /**
+   * 当前排序方向(仅渲染期生效):默认 desc,与服务端 GET /api/todos 的顺序一致。
+   * 不持久化,也不回写 todos —— todos 始终按服务端规则维持顺序。
+   */
+  var currentSortOrder = core.SORT_ORDERS.DESC;
+
   /** 完成/淡出过渡时长(ms),需与 style.css 中的过渡时长保持一致 */
   var TRANSITION_MS = 350;
 
@@ -106,7 +112,16 @@
   var listStatus = document.getElementById("list-status");
   var loadMoreBtn = document.getElementById("load-more-btn");
   var syncNotice = document.getElementById("sync-notice");
-  var filterButtons = document.querySelectorAll(".filter-btn");
+  // 排序按钮同样复用 .filter-btn 样式,但它们在结构上不属于筛选标签:
+  // 只保留带 data-filter 的按钮,避免被写入 aria-selected/tabindex/aria-controls,
+  // 也避免方向键在筛选标签与排序按钮之间串台。
+  var filterButtons = Array.prototype.filter.call(
+    document.querySelectorAll(".filter-btn"),
+    function (btn) {
+      return !!(btn && btn.dataset && typeof btn.dataset.filter === "string");
+    }
+  );
+  var sortButtons = document.querySelectorAll("[data-sort]");
   var todoPanel = document.getElementById("todo-panel");
   var remainingCountNumber = document.getElementById("remaining-count-number");
   var clearCompletedBtn = document.getElementById("clear-completed-btn");
@@ -501,8 +516,13 @@
 
   /* ---------- 渲染 ---------- */
 
+  /**
+   * 当前视图的条目:先筛选,再按当前方向排序(返回新数组)。
+   * 排序只作用于渲染副本,todos 本身仍维持服务端顺序;
+   * 放在这里是为了让分页切片(getVisiblePage)与「加载更多」看到同一顺序。
+   */
   function getVisibleTodos() {
-    return core.getVisibleTodos(todos, currentFilter);
+    return core.sortTodos(core.getVisibleTodos(todos, currentFilter), currentSortOrder);
   }
 
   function render() {
@@ -1048,6 +1068,15 @@
     }
   }
 
+  /** 同步排序按钮的选中态(复用 .is-active 样式)与 aria-pressed */
+  function syncSortControls() {
+    sortButtons.forEach(function (btn) {
+      var active = btn.dataset.sort === currentSortOrder;
+      btn.classList.toggle("is-active", active);
+      btn.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+  }
+
   /** 方向键 / Home / End 在标签间移动焦点并切换筛选(ARIA tabs 键盘模式) */
   function onFilterKeydown(e) {
     var key = e.key;
@@ -1089,6 +1118,21 @@
     // 切换标签时取消未完成的「清除已完成」二次确认
     resetClearConfirm(false);
     syncFilterTabs();
+    render();
+  }
+
+  /**
+   * 切换排序方向:仅改变渲染顺序,不改动 todos、不发写请求、不持久化。
+   * 回到第一页;若正在编辑的条目被排到页外,自动展开到其所在页,
+   * 以便 restoreEditMode 仍能恢复输入框与未提交文本。
+   */
+  function setSortOrder(order) {
+    var next = core.normalizeSortOrder(order);
+    if (next === currentSortOrder) return;
+    currentSortOrder = next;
+    visibleLimit = PAGE_SIZE;
+    if (editState) ensureTodoVisible(editState.id);
+    syncSortControls();
     render();
   }
 
@@ -1183,6 +1227,12 @@
       setFilter(btn.dataset.filter);
     });
     btn.addEventListener("keydown", onFilterKeydown);
+  });
+
+  sortButtons.forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      setSortOrder(btn.dataset.sort);
+    });
   });
 
   if (clearCompletedBtn) {
@@ -1301,6 +1351,9 @@
 
   /* 初始化筛选标签的选中态与可访问性属性 */
   syncFilterTabs();
+
+  /* 初始化排序按钮的选中态(默认高→低,与服务端顺序一致) */
+  syncSortControls();
 
   /* ---------- 启动 ---------- */
   // 会话由 HttpOnly cookie 承载:直接问服务端,200 进主视图,401 显示登录页

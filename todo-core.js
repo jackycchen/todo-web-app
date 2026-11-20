@@ -34,6 +34,15 @@
   /** 长列表分页:每页默认条数 */
   var DEFAULT_PAGE_SIZE = 20;
 
+  /**
+   * 列表排序方向(仅前端视图偏好,不参与持久化):
+   *  - desc 优先级高→低(默认,与服务端 ORDER BY priority DESC 一致)
+   *  - asc  优先级低→高
+   * 两个方向内部同优先级一律按 createdAt 升序,保证顺序稳定。
+   */
+  var SORT_ORDERS = { DESC: "desc", ASC: "asc" };
+  var DEFAULT_SORT_ORDER = SORT_ORDERS.DESC;
+
   /** 把任意输入归一化为合法优先级;非法/缺失一律视为「普通」 */
   function normalizePriority(value) {
     return value === PRIORITIES.LOW ||
@@ -162,8 +171,29 @@
     return ca - cb;
   }
 
-  function sortTodos(todos) {
-    return (Array.isArray(todos) ? todos.slice() : []).sort(compareTodos);
+  /** 优先级从低到高,同级仍按 createdAt 升序(前端 asc 视图排序) */
+  function compareTodosAsc(a, b) {
+    var pa = normalizePriority(a && a.priority);
+    var pb = normalizePriority(b && b.priority);
+    if (pa !== pb) return pa - pb;
+    var ca = a && typeof a.createdAt === "number" ? a.createdAt : 0;
+    var cb = b && typeof b.createdAt === "number" ? b.createdAt : 0;
+    return ca - cb;
+  }
+
+  /** 把任意输入归一化为合法排序方向;非法/缺失一律回落到默认的 desc */
+  function normalizeSortOrder(order) {
+    return order === SORT_ORDERS.ASC ? SORT_ORDERS.ASC : SORT_ORDERS.DESC;
+  }
+
+  /**
+   * 按指定方向排序(视图用,返回新数组,不改动入参)。
+   * order 缺省或非法时等价于原有 DESC 行为,保持向后兼容。
+   */
+  function sortTodos(todos, order) {
+    var compare =
+      normalizeSortOrder(order) === SORT_ORDERS.ASC ? compareTodosAsc : compareTodos;
+    return (Array.isArray(todos) ? todos.slice() : []).sort(compare);
   }
 
   /**
@@ -291,6 +321,8 @@
     DEFAULT_PRIORITY: DEFAULT_PRIORITY,
     PRIORITY_LABELS: PRIORITY_LABELS,
     DEFAULT_PAGE_SIZE: DEFAULT_PAGE_SIZE,
+    SORT_ORDERS: SORT_ORDERS,
+    DEFAULT_SORT_ORDER: DEFAULT_SORT_ORDER,
     normalizePriority: normalizePriority,
     generateId: generateId,
     createTodo: createTodo,
@@ -300,6 +332,8 @@
     removeTodo: removeTodo,
     setPriority: setPriority,
     compareTodos: compareTodos,
+    compareTodosAsc: compareTodosAsc,
+    normalizeSortOrder: normalizeSortOrder,
     sortTodos: sortTodos,
     getStats: getStats,
     clearCompleted: clearCompleted,
