@@ -181,6 +181,11 @@ const filterBtns = ["all", "active", "completed"].map((f) => {
   b.dataset.filter = f;
   return b;
 });
+const sortBtns = ["desc", "asc"].map((s) => {
+  const b = createElement("button");
+  b.dataset.sort = s;
+  return b;
+});
 
 const documentStub = {
   documentElement: (() => {
@@ -192,7 +197,8 @@ const documentStub = {
   createElement,
   querySelectorAll(sel) {
     if (sel === ".auth-tab") return authTabs;
-    if (sel === ".filter-btn") return filterBtns;
+    if (sel === ".filter-btn") return filterBtns.concat(sortBtns);
+    if (sel === "[data-sort]") return sortBtns;
     return [];
   }
 };
@@ -609,6 +615,12 @@ test("长列表:默认只渲染一页,加载更多后补齐且切换筛选重置
   assert.equal(pagination.hidden, false);
   assert.equal(getElement("load-more-btn").hidden, true);
 
+  // 切换排序同样把加载深度重置回第一页(本用例条目同优先级,顺序不变)
+  sortBtns[1].handlers.click[0](); // 低→高
+  assert.equal(getElement("todo-list").children.length, 20, "切换排序后回到第一页");
+  sortBtns[0].handlers.click[0](); // 高→低
+  assert.equal(getElement("todo-list").children.length, 20);
+
   // 切换筛选会把加载深度重置回第一页
   filterBtns[1].handlers.click[0](); // 未完成
   assert.equal(getElement("todo-list").children.length, 20);
@@ -985,4 +997,77 @@ test("保存后按服务端确认的 createdAt 重排,避免刷新前后顺序�
   } finally {
     global.fetch = realFetch;
   }
+});
+
+test("排序切换:高→低 / 低→高 只改变渲染顺序,不写入服务端", async () => {
+  // 承接上一个用例的登录态 ivan,登出后注册独立用户 ken
+  getElement("logout-btn").handlers.click[0]();
+  await flush();
+  clickTab(1);
+  fillInput("register-username", "ken");
+  fillInput("register-password", "secret1234567");
+  submitForm("register-form");
+  await flush();
+
+  for (const text of ["甲", "乙", "丙"]) {
+    fillInput("todo-input", text);
+    submitForm("todo-form");
+    await flush();
+  }
+
+  // 丙 -> 低(0),甲 -> 高(2);乙保持普通(1)
+  changePriority(2, 0);
+  await new Promise((r) => setTimeout(r, 300));
+  changePriority(0, 2);
+  await new Promise((r) => setTimeout(r, 300));
+
+  assert.deepEqual(renderedItems().map((i) => i.text), ["甲", "乙", "丙"], "默认高→低");
+
+  // 排序按钮不属于筛选标签集合:不会被写入 aria-selected / tabindex
+  assert.equal(sortBtns[0].getAttribute("aria-selected"), undefined);
+  assert.equal(sortBtns[0].getAttribute("tabindex"), undefined);
+  assert.equal(sortBtns[0].getAttribute("aria-pressed"), "true");
+  assert.equal(sortBtns[1].getAttribute("aria-pressed"), "false");
+
+  // 切到低→高:视图顺序反转,同优先级内仍保持 createdAt 升序
+  sortBtns[1].handlers.click[0]();
+  assert.deepEqual(renderedItems().map((i) => i.text), ["丙", "乙", "甲"]);
+  assert.equal(sortBtns[1].getAttribute("aria-pressed"), "true");
+  assert.equal(sortBtns[0].getAttribute("aria-pressed"), "false");
+  assert.equal(sortBtns[1].classList.contains("is-active"), true);
+  assert.equal(sortBtns[0].classList.contains("is-active"), false);
+
+  // 排序只是渲染期变换:服务端顺序仍是 DESC
+  const serverList = await (await fetch(`${base}/api/todos`)).json();
+  assert.deepEqual(
+    serverList.map((t) => t.text),
+    ["甲", "乙", "丙"],
+    "前端排序不得回写服务端顺序"
+  );
+
+  // 筛选与排序组合:勾选「乙」后,已完成 / 进行中各自仍按 asc 排列
+  clickCheckbox(1);
+  await flush();
+  filterBtns[2].handlers.click[0](); // 已完成
+  assert.deepEqual(renderedItems().map((i) => i.text), ["乙"]);
+  filterBtns[1].handlers.click[0](); // 进行中
+  assert.deepEqual(renderedItems().map((i) => i.text), ["丙", "甲"]);
+  filterBtns[0].handlers.click[0](); // 全部
+  assert.deepEqual(renderedItems().map((i) => i.text), ["丙", "乙", "甲"]);
+
+  // 排序触发的整表重绘保留编辑态与未提交输入:
+  // asc 视图第一行是「丙」,切回 desc 后它落到第三行,编辑框应随之恢复
+  const { editor } = startEditing(0);
+  assert.ok(editor, "应进入编辑态");
+  editor.value = "丙 - 草稿";
+  editor.handlers.input[0]();
+  sortBtns[0].handlers.click[0](); // 切回高→低
+  const restored = editingEditor(2);
+  assert.ok(restored, "重绘后应恢复编辑框");
+  assert.equal(restored.value, "丙 - 草稿", "未提交输入不得丢失");
+  restored.handlers.keydown[0]({ key: "Escape", preventDefault() {} });
+
+  assert.deepEqual(renderedItems().map((i) => i.text), ["甲", "乙", "丙"]);
+  assert.equal(sortBtns[0].getAttribute("aria-pressed"), "true");
+  assert.equal(sortBtns[1].getAttribute("aria-pressed"), "false");
 });

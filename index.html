@@ -89,6 +89,12 @@
         <button type="button" id="filter-tab-completed" class="filter-btn" data-filter="completed" role="tab" aria-selected="false" aria-controls="todo-panel" tabindex="-1">已完成</button>
       </div>
 
+      <!-- 排序切换:仅前端视图偏好,不影响服务端顺序与数据结构 -->
+      <div id="sort-controls" class="filters sort-controls" role="group" aria-label="按优先级排序">
+        <button type="button" id="sort-order-desc" class="filter-btn is-active" data-sort="desc" aria-pressed="true" aria-label="按优先级从高到低排序">高→低</button>
+        <button type="button" id="sort-order-asc" class="filter-btn" data-sort="asc" aria-pressed="false" aria-label="按优先级从低到高排序">低→高</button>
+      </div>
+
       <div class="list-toolbar">
         <p id="remaining-count" class="remaining-count" role="status" aria-live="polite" aria-atomic="true">
           还剩 <strong id="remaining-count-number">0</strong> 项未完成
