@@ -211,7 +211,8 @@
 
   function loadTodos() {
     return api.getTodos().then(function (items) {
-      todos = core.sanitizeItems(items);
+      // 服务端仍按 priority 返回,页面统一改为 createdAt 从新到旧展示
+      todos = core.sortTodos(core.sanitizeItems(items));
       lastSynced = todos.map(cloneItem);
       lastSyncAt = 0;
       visibleLimit = PAGE_SIZE;
@@ -327,8 +328,8 @@
       });
     })).then(function () {
       // createdAt 由服务端时钟生成,可能与本机时钟不同;并发新建时服务端处理
-      // 顺序也可能与本地不同。这里按与服务端相同的规则(priority DESC,
-      // createdAt ASC)重排一次,避免刷新前后列表顺序跳变。
+      // 顺序也可能与本地不同。这里统一按页面规则(createdAt DESC,id ASC)
+      // 重排一次,避免刷新前后列表顺序跳变。priority 不参与排序。
       var sorted = core.sortTodos(todos);
       var orderChanged = sorted.some(function (t, i) {
         return t.id !== todos[i].id;
@@ -462,7 +463,8 @@
     });
 
     if (changed) {
-      // 远端可能改变了优先级;保持与服务端一致的排序后再渲染
+      // 远端新增/修改后按页面规则重排(createdAt DESC,id ASC);
+      // 纯完成状态变更不改变 createdAt,因此条目不会跳位。
       todos = core.sortTodos(todos);
       // 仅当用户主动加载过不止一页时,才跟随远端新增继续展开;
       // 否则保持一页上限,避免一次同步把大量条目全部塞进 DOM。
@@ -502,7 +504,8 @@
   /* ---------- 渲染 ---------- */
 
   function getVisibleTodos() {
-    return core.getVisibleTodos(todos, currentFilter);
+    // 渲染/分页/计数都走同一排序,确保每次展示都是 createdAt 从新到旧
+    return core.getVisibleTodos(core.sortTodos(todos), currentFilter);
   }
 
   function render() {
@@ -758,18 +761,19 @@
       return;
     }
     var added = next[next.length - 1];
-    // 新增项默认「普通」,排序后它不一定在末尾,先记下 id 再排
+    // 新项 createdAt 最新,排序后应排在最前;先记下 id 再排,便于展开可见页
     todos = core.sortTodos(next);
     ensureTodoVisible(added.id);
     saveTodos();
     render();
   }
 
-  /** 修改优先级:本地立即按服务端同一规则重排,再提交(提交会刷新 updatedAt) */
+  /** 修改优先级:仅更新标记并持久化,列表仍按 createdAt 降序展示 */
   function changePriority(id, priority) {
     var next = core.setPriority(todos, id, priority);
     if (next === todos) return; // id 不存在或优先级未变化
-    todos = core.sortTodos(next);
+    // 优先级不参与排序,保持当前展示顺序,避免修改后条目跳位
+    todos = next;
     saveTodos();
     render();
   }

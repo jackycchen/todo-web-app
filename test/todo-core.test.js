@@ -551,19 +551,50 @@ test("setPriority 修改优先级并返回新数组;无效值归一化为普通"
   assert.equal(core.setPriority(todos, "a", 99)[0].priority, core.PRIORITIES.NORMAL);
 });
 
-test("sortTodos:优先级从高到低,同级按 createdAt 升序", () => {
+test("sortTodos:按 createdAt 从新到旧,最新创建的在最前", () => {
   const todos = [
-    { id: "low", priority: 0, createdAt: 100 },
-    { id: "normal-late", priority: 1, createdAt: 300 },
-    { id: "high", priority: 2, createdAt: 200 },
-    { id: "normal-early", priority: 1, createdAt: 100 }
+    { id: "oldest", priority: core.PRIORITIES.HIGH, createdAt: 100 },
+    { id: "newest", priority: core.PRIORITIES.LOW, createdAt: 300 },
+    { id: "middle", priority: core.PRIORITIES.NORMAL, createdAt: 200 }
   ];
 
   assert.deepEqual(
     core.sortTodos(todos).map((t) => t.id),
-    ["high", "normal-early", "normal-late", "low"]
+    ["newest", "middle", "oldest"]
   );
   assert.notStrictEqual(core.sortTodos(todos), todos, "返回新数组,不修改入参");
+});
+
+test("sortTodos:priority 不参与排序,修改优先级不改变顺序", () => {
+  const todos = [
+    { id: "a", priority: core.PRIORITIES.LOW, createdAt: 100 },
+    { id: "b", priority: core.PRIORITIES.HIGH, createdAt: 200 }
+  ];
+
+  // 无论优先级如何,顺序只由 createdAt 决定
+  assert.deepEqual(core.sortTodos(todos).map((t) => t.id), ["b", "a"]);
+  assert.deepEqual(
+    core.sortTodos(todos.map((t) => ({ ...t, priority: core.PRIORITIES.HIGH }))).map((t) => t.id),
+    ["b", "a"]
+  );
+});
+
+test("sortTodos:createdAt 相同时按 id 升序兜底,保证顺序稳定", () => {
+  const todos = [
+    { id: "b", priority: core.PRIORITIES.LOW, createdAt: 100 },
+    { id: "c", priority: core.PRIORITIES.HIGH, createdAt: 100 },
+    { id: "a", priority: core.PRIORITIES.NORMAL, createdAt: 100 }
+  ];
+
+  assert.deepEqual(
+    core.sortTodos(todos).map((t) => t.id),
+    ["a", "b", "c"]
+  );
+  // 重排后再次排序结果一致(稳定)
+  assert.deepEqual(
+    core.sortTodos(core.sortTodos(todos)).map((t) => t.id),
+    ["a", "b", "c"]
+  );
 });
 
 test("sanitizeItems 为缺失/非法 priority 的数据补默认「普通」", () => {
