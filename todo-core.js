@@ -20,12 +20,12 @@
   var FILTERS = { ALL: "all", ACTIVE: "active", COMPLETED: "completed" };
 
   /**
-   * 优先级取值:数值越大越靠前。
+   * 优先级取值(仅作为可编辑标记持久化,不参与列表展示排序)。
    *  - 0 低
-   *  - 1 普通(默认,保证旧数据/未设置时列表观感不变)
+   *  - 1 普通(默认,保证旧数据/未设置时有合法值)
    *  - 2 高
-   * 使用小整数而非字符串:排序可在 SQL 直接完成(ORDER BY priority DESC),
-   * 也便于后续插入中间档位。
+   * 使用小整数而非字符串:服务端可直接比较/存储,也便于后续插入中间档位。
+   * 页面默认展示顺序由 createdAt 决定(见 compareTodos),与优先级无关。
    */
   var PRIORITIES = { LOW: 0, NORMAL: 1, HIGH: 2 };
   var DEFAULT_PRIORITY = PRIORITIES.NORMAL;
@@ -150,16 +150,24 @@
   }
 
   /**
-   * 与服务端 SELECT 一致的排序:优先级从高到低,同级按 createdAt 升序。
-   * 返回新数组(稳定排序),不改动入参;用于本地写入后立即保持列表顺序。
+   * 页面默认展示排序:createdAt 从新到旧(最新创建的在最前),
+   * createdAt 相同时按 id 升序兜底,保证首屏、分页、增量同步与
+   * 保存后重排的结果一致且稳定。
+   * priority 仍可编辑并持久化,但不再参与排序。
+   * 返回新数组(稳定排序),不改动入参。
    */
   function compareTodos(a, b) {
-    var pa = normalizePriority(a && a.priority);
-    var pb = normalizePriority(b && b.priority);
-    if (pa !== pb) return pb - pa;
-    var ca = a && typeof a.createdAt === "number" ? a.createdAt : 0;
-    var cb = b && typeof b.createdAt === "number" ? b.createdAt : 0;
-    return ca - cb;
+    var ca = a && typeof a.createdAt === "number" && isFinite(a.createdAt) ? a.createdAt : 0;
+    var cb = b && typeof b.createdAt === "number" && isFinite(b.createdAt) ? b.createdAt : 0;
+    if (ca !== cb) return cb - ca;
+    var ia = a && a.id != null ? a.id : "";
+    var ib = b && b.id != null ? b.id : "";
+    if (typeof ia === "number" && typeof ib === "number") return ia - ib;
+    var sa = String(ia);
+    var sb = String(ib);
+    if (sa < sb) return -1;
+    if (sa > sb) return 1;
+    return 0;
   }
 
   function sortTodos(todos) {

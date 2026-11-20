@@ -400,8 +400,8 @@ test("前端端到端:注册/增删改/登出/重新登录/用户隔离", async 
 
   let items = renderedItems();
   assert.equal(items.length, 2);
-  assert.equal(items[0].text, "给前端接入后端 API");
-  assert.equal(items[1].text, "验证多用户隔离");
+  assert.equal(items[0].text, "验证多用户隔离", "默认按 createdAt 降序,最新创建的在最前");
+  assert.equal(items[1].text, "给前端接入后端 API");
   assert.equal(getElement("stats-total").textContent, "2");
   assert.equal(getElement("stats-completed").textContent, "0");
   assert.equal(getElement("remaining-count-number").textContent, "2");
@@ -418,12 +418,12 @@ test("前端端到端:注册/增删改/登出/重新登录/用户隔离", async 
   assert.equal(getElement("stats-completed").textContent, "1");
   assert.equal(getElement("remaining-count-number").textContent, "1");
 
-  // ---------- 删除第二条 ----------
+  // ---------- 删除第二条(较旧的一条) ----------
   clickDelete(1);
   await flush();
   items = renderedItems();
   assert.equal(items.length, 1);
-  assert.equal(items[0].text, "给前端接入后端 API");
+  assert.equal(items[0].text, "验证多用户隔离");
   assert.equal(getElement("stats-total").textContent, "1");
   assert.equal(getElement("remaining-count-number").textContent, "0");
 
@@ -452,7 +452,7 @@ test("前端端到端:注册/增删改/登出/重新登录/用户隔离", async 
   assert.equal(getElement("app-view").hidden, false);
   items = renderedItems();
   assert.equal(items.length, 1);
-  assert.equal(items[0].text, "给前端接入后端 API");
+  assert.equal(items[0].text, "验证多用户隔离");
   assert.equal(items[0].completed, true);
 
   // ---------- 注册 dave,数据互相隔离 ----------
@@ -668,8 +668,8 @@ test("筛选标签 / 实时计数 / 一键清除已完成", async () => {
   filterBtns[1].handlers.keydown[0]({ key: "ArrowLeft", preventDefault() {} });
   assert.equal(filterBtns[0].getAttribute("aria-selected"), "true");
 
-  // 完成任务 A(全部视图下第 0 条),计数实时更新
-  clickCheckbox(0);
+  // 完成任务 A(全部视图下最新创建的在最前,故 A 是第 3 条 / 索引 2),计数实时更新
+  clickCheckbox(2);
   await flush();
   assert.equal(getElement("remaining-count-number").textContent, "2");
   assert.equal(getElement("stats-completed").textContent, "1");
@@ -683,10 +683,10 @@ test("筛选标签 / 实时计数 / 一键清除已完成", async () => {
   assert.deepEqual(renderedItems().map((i) => i.text), ["任务 A"]);
   assert.equal(getElement("remaining-count-number").textContent, "2", "计数为全局口径,不随筛选收窄");
 
-  // 切到「进行中」:只显示 B、C
+  // 切到「进行中」:只显示 B、C,仍按 createdAt 降序
   filterBtns[1].handlers.click[0]();
   assert.equal(filterBtns[1].getAttribute("aria-selected"), "true");
-  assert.deepEqual(renderedItems().map((i) => i.text), ["任务 B", "任务 C"]);
+  assert.deepEqual(renderedItems().map((i) => i.text), ["任务 C", "任务 B"]);
   assert.equal(getElement("remaining-count-number").textContent, "2");
 
   filterBtns[0].handlers.click[0](); // 回到「全部」
@@ -735,9 +735,10 @@ test("筛选标签 / 实时计数 / 一键清除已完成", async () => {
 
 test("双击编辑:失焦(点击别处)自动保存而不是丢弃", async () => {
   await registerAndSeed("henry", ["失焦前", "保持不变"]);
-  assert.deepEqual(renderedItems().map((i) => i.text), ["失焦前", "保持不变"]);
+  // 默认 createdAt 降序:较新的「保持不变」在前,「失焦前」在后
+  assert.deepEqual(renderedItems().map((i) => i.text), ["保持不变", "失焦前"]);
 
-  const { li, editor } = startEditing(0);
+  const { li, editor } = startEditing(1);
   assert.ok(editor, "双击文本后应出现编辑输入框");
   assert.equal(li.classList.contains("is-editing"), true);
   assert.equal(editor.value, "失焦前");
@@ -748,8 +749,8 @@ test("双击编辑:失焦(点击别处)自动保存而不是丢弃", async () =>
   editor.handlers.blur[0]({});
   await flush();
 
-  assert.deepEqual(renderedItems().map((i) => i.text), ["失焦后", "保持不变"]);
-  assert.equal(getElement("todo-list").children[0].classList.contains("is-editing"), false);
+  assert.deepEqual(renderedItems().map((i) => i.text), ["保持不变", "失焦后"]);
+  assert.equal(getElement("todo-list").children[1].classList.contains("is-editing"), false);
 
   const serverList = await (await fetch(`${base}/api/todos`)).json();
   assert.ok(
@@ -842,7 +843,8 @@ test("双击编辑:输入法组合期回车不提交,确认候选词后再回车
 test("双击编辑:轮询整表重绘后仍保留编辑态与未提交输入", async () => {
   await registerAndSeed("judy", ["编辑中的任务", "远端会变的任务"]);
 
-  const { editor } = startEditing(0);
+  // createdAt 降序:「远端会变的任务」在前(索引 0),编辑较旧的那条(索引 1)
+  const { editor } = startEditing(1);
   editor.value = "尚未提交的输入";
   editor.handlers.input[0]({});
 
@@ -861,17 +863,17 @@ test("双击编辑:轮询整表重绘后仍保留编辑态与未提交输入", a
   await new Promise((r) => setTimeout(r, 600));
 
   const list = getElement("todo-list");
-  const editedLi = list.children[0];
-  const restored = editingEditor(0);
+  const editedLi = list.children[1];
+  const restored = editingEditor(1);
   assert.ok(restored, "轮询重绘后编辑输入框应被恢复");
   assert.equal(editedLi.classList.contains("is-editing"), true, "应仍处于编辑态");
   assert.equal(restored.value, "尚未提交的输入", "未提交的输入不应丢失");
-  assert.equal(list.children[1].children[0].checked, true, "远端变更应已同步并重绘");
+  assert.equal(list.children[0].children[0].checked, true, "远端变更应已同步并重绘");
 
   // 失焦保存:轮询期间保留的内容正常提交
   restored.handlers.blur[0]({});
   await flush();
-  assert.deepEqual(renderedItems()[0].text, "尚未提交的输入");
+  assert.deepEqual(renderedItems()[1].text, "尚未提交的输入");
 
   const after = await (await fetch(`${base}/api/todos`)).json();
   assert.ok(after.some((t) => t.text === "尚未提交的输入"), "编辑内容应写入服务端");
@@ -880,7 +882,7 @@ test("双击编辑:轮询整表重绘后仍保留编辑态与未提交输入", a
 
 /* ---------- 优先级与排序 ---------- */
 
-test("优先级:前端修改后立即重排,刷新后仍然生效", async () => {
+test("优先级:可编辑并持久化,但不影响列表顺序", async () => {
   // 注册独立用户 henry2,避免与其他用例已注册的用户重名
   clickTab(1);
   fillInput("register-username", "henry2");
@@ -898,31 +900,30 @@ test("优先级:前端修改后立即重排,刷新后仍然生效", async () => 
 
   assert.deepEqual(
     renderedItems().map((i) => i.text),
-    ["普通 A", "普通 B"],
-    "默认同为「普通」时按创建顺序"
+    ["普通 B", "普通 A"],
+    "默认按 createdAt 降序,最新创建的在最前"
   );
 
-  // 把第二条设为「高」:本地立即排到最前
-  changePriority(1, 2);
+  // 把最前的「普通 B」设为「高」:优先级可编辑,但不应改变展示顺序
+  changePriority(0, 2);
   await new Promise((r) => setTimeout(r, 300));
 
   assert.deepEqual(
     renderedItems().map((i) => i.text),
     ["普通 B", "普通 A"],
-    "高优先级立即排到最前"
+    "修改优先级不改变列表顺序"
   );
 
-  // 服务端已持久化优先级,并按新顺序返回
+  // 服务端已持久化优先级
   const serverList = await (await fetch(`${base}/api/todos`)).json();
-  assert.deepEqual(
-    serverList.map((t) => ({ text: t.text, priority: t.priority })),
-    [
-      { text: "普通 B", priority: 2 },
-      { text: "普通 A", priority: 1 }
-    ]
-  );
+  const priorityByText = {};
+  serverList.forEach((t) => {
+    priorityByText[t.text] = t.priority;
+  });
+  assert.equal(priorityByText["普通 B"], 2);
+  assert.equal(priorityByText["普通 A"], 1);
 
-  // 模拟刷新页面:登出后重新登录,顺序仍由服务端决定
+  // 模拟刷新页面:登出后重新登录,顺序仍按 createdAt 降序
   getElement("logout-btn").handlers.click[0]();
   await flush();
   clickTab(0);
@@ -934,11 +935,11 @@ test("优先级:前端修改后立即重排,刷新后仍然生效", async () => 
   assert.deepEqual(
     renderedItems().map((i) => i.text),
     ["普通 B", "普通 A"],
-    "刷新后优先级排序仍然生效"
+    "刷新后仍按 createdAt 降序,与优先级无关"
   );
 });
 
-test("保存后按服务端确认的 createdAt 重排,避免刷新前后顺序跳变", async () => {
+test("保存后按服务端确认的 createdAt 重排,最新创建的在最前", async () => {
   // 上一个用例结束时登录的是 henry2,先登出并注册独立用户
   getElement("logout-btn").handlers.click[0]();
   await flush();
@@ -952,6 +953,7 @@ test("保存后按服务端确认的 createdAt 重排,避免刷新前后顺序�
   let createIndex = 0;
   // 模拟服务端处理顺序与本地提交顺序相反:先提交的拿到更大的 createdAt。
   // 客户端必须以服务端确认值为准重排,否则刷新后会看到另一种顺序。
+  // 按默认规则(createdAt DESC),较大的 createdAt 应显示在最前。
   const serverCreatedAt = [2000, 1000];
   global.fetch = function (url, opts) {
     return realFetch(url, opts).then(function (res) {
@@ -979,10 +981,86 @@ test("保存后按服务端确认的 createdAt 重排,避免刷新前后顺序�
 
     assert.deepEqual(
       renderedItems().map((i) => i.text),
-      ["后创建的", "先创建的"],
-      "本地顺序应与服务端确认的 createdAt 排序一致"
+      ["先创建的", "后创建的"],
+      "本地顺序应与服务端确认的 createdAt 降序一致"
     );
   } finally {
     global.fetch = realFetch;
   }
+});
+
+/* ---------- 默认排序:增量同步 ---------- */
+
+test("增量同步:远端新建的最新项排在最前,纯完成变更不跳位", async () => {
+  // 上一个用例结束时 ivan 已登录,先登出并注册独立用户
+  getElement("logout-btn").handlers.click[0]();
+  await flush();
+  clickTab(1);
+  fillInput("register-username", "kate");
+  fillInput("register-password", "secret1234567");
+  submitForm("register-form");
+  await flush();
+
+  fillInput("todo-input", "较早任务");
+  submitForm("todo-form");
+  await flush();
+  fillInput("todo-input", "较新任务");
+  submitForm("todo-form");
+  await flush();
+
+  assert.deepEqual(
+    renderedItems().map((i) => i.text),
+    ["较新任务", "较早任务"],
+    "首屏按 createdAt 降序"
+  );
+
+  // 模拟第二个浏览器:同一账号新建一条最新的待办
+  const loginRes = await fetch(`${base}/api/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "kate", password: "secret1234567" }),
+  });
+  const { token } = await loginRes.json();
+  const authHeaders = {
+    "Content-Type": "application/json",
+    Authorization: "Bearer " + token,
+  };
+
+  const createRes = await fetch(`${base}/api/todos`, {
+    method: "POST",
+    headers: authHeaders,
+    body: JSON.stringify({ text: "远端最新任务" }),
+  });
+  assert.equal(createRes.status, 201);
+
+  // 等待轮询把远端新增合并进来
+  await new Promise((r) => setTimeout(r, 600));
+
+  assert.deepEqual(
+    renderedItems().map((i) => i.text),
+    ["远端最新任务", "较新任务", "较早任务"],
+    "增量同步后最新创建的在最前"
+  );
+
+  // 另一会话只变更完成状态:createdAt 不变,条目不应跳位
+  const remoteList = await (await fetch(`${base}/api/todos`, {
+    headers: { Authorization: "Bearer " + token },
+  })).json();
+  const oldest = remoteList.find((t) => t.text === "较早任务");
+  assert.ok(oldest);
+  const patchRes = await fetch(`${base}/api/todos/${encodeURIComponent(oldest.id)}`, {
+    method: "PATCH",
+    headers: authHeaders,
+    body: JSON.stringify({ completed: true }),
+  });
+  assert.equal(patchRes.status, 200);
+
+  await new Promise((r) => setTimeout(r, 600));
+
+  assert.deepEqual(
+    renderedItems().map((i) => i.text),
+    ["远端最新任务", "较新任务", "较早任务"],
+    "纯完成状态变更不应导致条目跳位"
+  );
+  assert.equal(renderedItems()[2].completed, true);
 });
