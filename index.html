@@ -95,6 +95,20 @@
         <button type="button" id="sort-order-asc" class="filter-btn" data-sort="asc" aria-pressed="false" aria-label="按优先级从低到高排序">低→高</button>
       </div>
 
+      <!-- 关键字搜索:与上方三态筛选组合生效,清空后恢复普通列表 -->
+      <div class="search-box">
+        <label class="visually-hidden" for="todo-search">搜索待办</label>
+        <input
+          type="search"
+          id="todo-search"
+          class="search-input"
+          placeholder="搜索待办关键字"
+          maxlength="200"
+          autocomplete="off"
+          aria-label="搜索待办"
+        >
+      </div>
+
       <div class="list-toolbar">
         <p id="remaining-count" class="remaining-count" role="status" aria-live="polite" aria-atomic="true">
           还剩 <strong id="remaining-count-number">0</strong> 项未完成
