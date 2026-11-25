@@ -566,6 +566,45 @@ test("sortTodos:优先级从高到低,同级按 createdAt 升序", () => {
   assert.notStrictEqual(core.sortTodos(todos), todos, "返回新数组,不修改入参");
 });
 
+test("sortTodos(asc):优先级从低到高,同级仍按 createdAt 升序", () => {
+  const todos = [
+    { id: "low", priority: 0, createdAt: 100 },
+    { id: "normal-late", priority: 1, createdAt: 300 },
+    { id: "high", priority: 2, createdAt: 200 },
+    { id: "normal-early", priority: 1, createdAt: 100 }
+  ];
+
+  assert.deepEqual(
+    core.sortTodos(todos, core.SORT_ORDERS.ASC).map((t) => t.id),
+    ["low", "normal-early", "normal-late", "high"]
+  );
+  assert.deepEqual(
+    todos.map((t) => t.id),
+    ["low", "normal-late", "high", "normal-early"],
+    "排序只作用于副本,不修改入参"
+  );
+
+  // 缺省 / 非法方向等价于原有 DESC 行为,保证向后兼容
+  const desc = core.sortTodos(todos);
+  assert.deepEqual(core.sortTodos(todos, undefined), desc);
+  assert.deepEqual(core.sortTodos(todos, "sideways"), desc);
+  assert.deepEqual(core.sortTodos(todos, core.SORT_ORDERS.DESC), desc);
+  assert.deepEqual(
+    desc.map((t) => t.id),
+    ["high", "normal-early", "normal-late", "low"]
+  );
+});
+
+test("normalizeSortOrder:仅接受 asc,其余一律回落到默认 desc", () => {
+  assert.equal(core.DEFAULT_SORT_ORDER, core.SORT_ORDERS.DESC);
+  assert.equal(core.normalizeSortOrder("asc"), "asc");
+  assert.equal(core.normalizeSortOrder("desc"), "desc");
+  assert.equal(core.normalizeSortOrder(undefined), "desc");
+  assert.equal(core.normalizeSortOrder(null), "desc");
+  assert.equal(core.normalizeSortOrder("ASC"), "desc");
+  assert.equal(core.normalizeSortOrder(1), "desc");
+});
+
 test("sanitizeItems 为缺失/非法 priority 的数据补默认「普通」", () => {
   const clean = core.sanitizeItems([
     { id: "a", text: "无优先级" },
