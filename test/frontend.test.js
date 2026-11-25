@@ -272,6 +272,7 @@ before(async () => {
   global.localStorage = localStorageShim;
   global.window.TODO_API_BASE = base;
   global.window.TODO_POLL_INTERVAL_MS = 150; // 测试中缩短轮询间隔
+  global.window.TODO_SEARCH_DEBOUNCE_MS = 0; // 关闭搜索防抖:输入即检索,断言更确定
   global.window.localStorage = localStorageShim;
   global.window.matchMedia = () => ({ matches: false });
   installCookieAwareFetch();
@@ -306,6 +307,40 @@ function fillInput(id, value) {
 function submitForm(id) {
   getElement(id).handlers.submit[0]({ preventDefault() {} });
 }
+
+/** 在搜索框输入关键字并触发 input 事件(防抖已关闭:输入即检索) */
+function typeSearch(value) {
+  const search = getElement("todo-search");
+  search.value = value;
+  search.handlers.input[0]({});
+}
+
+/** 在搜索框上按键:Enter 立即检索,Escape 清空 */
+function pressSearchKey(key) {
+  getElement("todo-search").handlers.keydown[0]({ key, preventDefault() {} });
+}
+
+/**
+ * 在 fn 执行期间记录所有 fetch 请求的 URL,结束后恢复原 fetch。
+ * 用于断言「请求是否带 q / 带 since / 二者是否同时出现」。
+ */
+async function recordFetch(fn) {
+  const calls = [];
+  const prevFetch = global.fetch;
+  global.fetch = function (input, init) {
+    calls.push(String(input));
+    return prevFetch(input, init);
+  };
+  try {
+    await fn(calls);
+  } finally {
+    global.fetch = prevFetch;
+  }
+  return calls;
+}
+
+/** 搜索涉及「保存 -> 重新检索」的串行请求,等待时间放宽一些 */
+const flushLong = () => new Promise((r) => setTimeout(r, 300));
 
 function clickTab(index) {
   authTabs[index].handlers.click[0]();
@@ -1070,4 +1105,246 @@ test("排序切换:高→低 / 低→高 只改变渲染顺序,不写入服务�
   assert.deepEqual(renderedItems().map((i) => i.text), ["甲", "乙", "丙"]);
   assert.equal(sortBtns[0].getAttribute("aria-pressed"), "true");
   assert.equal(sortBtns[1].getAttribute("aria-pressed"), "false");
+});
+
+/* ---------- 关键字搜索 ---------- */
+
+test("搜索:静态结构 + 输入关键字触发带 q 的请求并渲染匹配结果", async () => {
+  // DOM 桩不解析 index.html,搜索框的语义属性只能静态断言
+  const indexHtml = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
+  const searchTag = /<input[^>]*id="todo-search"[^>]*>/.exec(indexHtml);
+  assert.ok(searchTag, "index.html 应包含 #todo-search 输入框");
+  assert.match(searchTag[0], /type="search"/);
+  assert.match(searchTag[0], /maxlength="200"/);
+  assert.match(searchTag[0], /aria-label="搜索待办"/);
+  assert.match(indexHtml, /<label[^>]*for="todo-search"/, "搜索框应有对应的 label");
+  assert.ok(
+    indexHtml.indexOf("filter-toolbar") < indexHtml.indexOf('id="todo-search"') &&
+      indexHtml.indexOf('id="todo-search"') < indexHtml.indexOf('id="todo-panel"'),
+    "搜索框应位于筛选工具栏内"
+  );
+
+  await registerAndSeed("kate", ["买牛奶", "写周报", "买面包"]);
+  assert.deepEqual(
+    renderedItems().map((i) => i.text),
+    ["买牛奶", "写周报", "买面包"]
+  );
+
+  const query = "/api/todos?q=" + encodeURIComponent("买");
+  const calls = await recordFetch(async () => {
+    typeSearch("买");
+    await flushLong();
+  });
+
+  assert.ok(
+    calls.some((u) => u.includes(query)),
+    "输入关键字应发出带 q 的检索请求"
+  );
+  assert.ok(
+    !calls.some((u) => u.includes("since=")),
+    "搜索请求不得与 since 增量参数混用"
+  );
+  assert.deepEqual(
+    renderedItems().map((i) => i.text),
+    ["买牛奶", "买面包"],
+    "应只渲染命中关键字的待办"
+  );
+  assert.equal(getElement("empty-state").hidden, true);
+});
+
+test("搜索:清空或纯空白关键字恢复不带 q 的普通列表", async () => {
+  // 承接上一用例:kate 已登录且正在搜索「买」
+  assert.equal(getElement("todo-search").value, "买");
+
+  const calls = await recordFetch(async () => {
+    typeSearch("   "); // 纯空白等价于清空
+    await flushLong();
+  });
+
+  assert.ok(
+    calls.some((u) => /\/api\/todos$/.test(u)),
+    "退出搜索应重新拉取不带 q 的普通列表"
+  );
+  assert.ok(
+    !calls.some((u) => u.includes("?q=")),
+    "恢复普通列表后不应再带 q"
+  );
+  assert.equal(getElement("todo-search").value, "", "纯空白输入应被清空");
+  assert.deepEqual(
+    renderedItems().map((i) => i.text),
+    ["买牛奶", "写周报", "买面包"],
+    "恢复普通列表应展示全部待办"
+  );
+});
+
+test("搜索:与三态筛选组合生效,切换筛选不丢关键字", async () => {
+  // 承接上一用例:已回到普通列表,筛选为「全部」
+  const query = "/api/todos?q=" + encodeURIComponent("买");
+  await recordFetch(async () => {
+    typeSearch("买");
+    await flushLong();
+  });
+
+  // 把「买牛奶」标记为已完成(搜索态下写操作会校准结果集)
+  clickCheckbox(0);
+  await flushLong();
+  assert.deepEqual(renderedItems().map((i) => i.text), ["买牛奶", "买面包"]);
+  assert.equal(getElement("todo-search").value, "买", "切换完成状态不应丢失关键字");
+
+  // 切换三态筛选:纯客户端过滤,不应退化成不带 q 的普通列表请求
+  const filterCalls = await recordFetch(async () => {
+    filterBtns[2].handlers.click[0](); // 已完成
+    await flush();
+  });
+  assert.deepEqual(
+    renderedItems().map((i) => i.text),
+    ["买牛奶"],
+    "搜索 + 已完成筛选应同时生效"
+  );
+  assert.ok(
+    !filterCalls.some((u) => u.includes("/api/todos")),
+    "切换筛选不应重新发起列表请求(关键字与结果保持)"
+  );
+
+  filterBtns[1].handlers.click[0](); // 进行中
+  assert.deepEqual(
+    renderedItems().map((i) => i.text),
+    ["买面包"],
+    "搜索 + 进行中筛选应同时生效"
+  );
+
+  filterBtns[0].handlers.click[0](); // 全部
+  assert.deepEqual(renderedItems().map((i) => i.text), ["买牛奶", "买面包"]);
+  assert.equal(getElement("todo-search").value, "买", "筛选切换后关键字仍在");
+
+  // 回车立即检索:请求仍带 q,说明关键字未被筛选覆盖
+  const enterCalls = await recordFetch(async () => {
+    pressSearchKey("Enter");
+    await flushLong();
+  });
+  assert.ok(
+    enterCalls.some((u) => u.includes(query)),
+    "搜索态下的再次检索仍应带 q"
+  );
+  assert.deepEqual(renderedItems().map((i) => i.text), ["买牛奶", "买面包"]);
+});
+
+test("搜索:与 since 轮询互斥,退出搜索后全量刷新并恢复轮询", async () => {
+  // 承接上一用例:kate 仍处于搜索「买」的状态,筛选为「全部」
+  assert.equal(getElement("todo-search").value, "买");
+
+  // 搜索期间即使超过轮询间隔,也不得发出 since 增量请求
+  const pollingCalls = await recordFetch(async () => {
+    await new Promise((r) => setTimeout(r, 400));
+  });
+  assert.equal(
+    pollingCalls.filter((u) => u.includes("since=")).length,
+    0,
+    "搜索期间不应轮询 since 增量"
+  );
+  assert.equal(
+    pollingCalls.filter((u) => u.includes("q=") && u.includes("since=")).length,
+    0,
+    "q 与 since 永不同时出现"
+  );
+
+  // 清空搜索:先全量刷新(不带 q/since),随后恢复 since 轮询
+  const exitCalls = await recordFetch(async () => {
+    typeSearch("");
+    await flushLong();
+    await new Promise((r) => setTimeout(r, 400)); // 等待至少一轮轮询
+  });
+
+  assert.ok(
+    exitCalls.some((u) => /\/api\/todos$/.test(u)),
+    "退出搜索应先发出不带 q/since 的全量列表请求"
+  );
+  assert.ok(
+    exitCalls.some((u) => u.includes("since=")),
+    "退出搜索后应恢复 since 增量轮询"
+  );
+  assert.ok(
+    !exitCalls.some((u) => u.includes("?q=")),
+    "退出搜索后不应再带 q"
+  );
+  for (const url of pollingCalls.concat(exitCalls)) {
+    assert.ok(
+      !(url.includes("q=") && url.includes("since=")),
+      `任何请求都不得同时带 q 与 since: ${url}`
+    );
+  }
+});
+
+test("搜索 × 排序组合:搜索结果同样跟随排序方向,且切排序不再发请求", async () => {
+  // 承接上一用例:kate 已登录、搜索已清空、筛选为「全部」
+  getElement("logout-btn").handlers.click[0]();
+  await flush();
+
+  await registerAndSeed("leo", ["买牛奶", "买面包", "买豆浆"]);
+
+  // 三个条目给成互不相同的优先级,排序结果不再依赖 createdAt:
+  // 买牛奶=高(2) / 买面包=普通(1) / 买豆浆=低(0)
+  const indexOf = (text) => renderedItems().findIndex((i) => i.text === text);
+  changePriority(indexOf("买牛奶"), 2);
+  await flushLong();
+  changePriority(indexOf("买面包"), 1);
+  await flushLong();
+  changePriority(indexOf("买豆浆"), 0);
+  await flushLong();
+  assert.deepEqual(
+    renderedItems().map((i) => i.text),
+    ["买牛奶", "买面包", "买豆浆"],
+    "普通列表默认高→低"
+  );
+
+  await recordFetch(async () => {
+    typeSearch("买");
+    await flushLong();
+  });
+  assert.deepEqual(
+    renderedItems().map((i) => i.text),
+    ["买牛奶", "买面包", "买豆浆"],
+    "搜索结果应沿用当前排序方向(高→低)"
+  );
+
+  // 搜索态切排序:纯客户端重排,不得重新发请求,避免引入 q 与 since 混用的可能
+  const sortCalls = await recordFetch(async () => {
+    sortBtns[1].handlers.click[0](); // 低→高
+    await flush();
+  });
+  assert.deepEqual(
+    renderedItems().map((i) => i.text),
+    ["买豆浆", "买面包", "买牛奶"],
+    "搜索结果应跟随排序切换(低→高)"
+  );
+  assert.equal(
+    sortCalls.filter((u) => u.includes("/api/todos")).length,
+    0,
+    "搜索态切排序不应触发任何列表/检索请求"
+  );
+  assert.equal(getElement("todo-search").value, "买", "切排序不应丢失关键字");
+
+  // 搜索 × 排序 × 三态筛选三者叠加:已完成筛选下仍保持 asc
+  clickCheckbox(0); // 勾选 asc 下首行「买豆浆」
+  await flushLong();
+  filterBtns[2].handlers.click[0](); // 已完成
+  assert.deepEqual(renderedItems().map((i) => i.text), ["买豆浆"]);
+  filterBtns[1].handlers.click[0](); // 进行中
+  assert.deepEqual(renderedItems().map((i) => i.text), ["买面包", "买牛奶"]);
+  filterBtns[0].handlers.click[0](); // 全部
+
+  // 退出搜索后普通列表同样沿用 asc,说明排序是视图级偏好而非搜索专属
+  await recordFetch(async () => {
+    typeSearch("");
+    await flushLong();
+  });
+  assert.deepEqual(
+    renderedItems().map((i) => i.text),
+    ["买豆浆", "买面包", "买牛奶"],
+    "退出搜索后普通列表应保持当前排序方向"
+  );
+
+  // 复原为默认 desc,避免影响后续用例
+  sortBtns[0].handlers.click[0]();
+  assert.equal(sortBtns[0].getAttribute("aria-pressed"), "true");
 });

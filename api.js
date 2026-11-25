@@ -111,6 +111,17 @@
       }
       return request("/api/todos?since=" + encodeURIComponent(String(since)));
     },
+    /**
+     * 按关键字检索待办(全量检索,不走 since 增量)。
+     * 关键字先去首尾空白:空关键字(含纯空白)等价于普通列表请求,不带 q;
+     * 非空时以 q 参数请求,服务端按子串匹配(英文大小写不敏感)。
+     * 注意:q 与 since 互斥,调用方在搜索期间必须暂停增量轮询。
+     */
+    searchTodos: function (keyword) {
+      var normalized = keyword == null ? "" : String(keyword).trim();
+      if (!normalized) return request("/api/todos");
+      return request("/api/todos?q=" + encodeURIComponent(normalized));
+    },
     createTodo: function (item) {
       // id / createdAt 由服务端生成,前端只提交用户可控的业务字段。
       // priority 缺省时不提交,由服务端按「普通」处理。
