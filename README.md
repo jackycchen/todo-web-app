@@ -176,6 +176,7 @@ SQLite 文件由单个服务进程独占写入。同一份 `TODO_DB_PATH` 被多
 | `PORT` | `3000` | HTTP 监听端口 |
 | `TODO_DB_PATH` | `data/todo.db` | SQLite 文件路径(目录不存在会自动创建) |
 | `TODO_SESSION_TTL_MS` / `SESSION_TTL_DAYS` | 30 天 | 会话有效期 |
+| `SHUTDOWN_TIMEOUT_MS` | `10000` | 优雅关闭时等待在途请求排空的上限(毫秒);超时后强制退出。非法值(非正整数)回退默认值 |
 
 ```bash
 PORT=8080 TODO_DB_PATH=/var/lib/todo/todo.db npm start
@@ -196,7 +197,38 @@ PORT=8080 TODO_DB_PATH=/var/lib/todo/todo.db npm start
 { "ok": false, "db": "error" }
 ```
 
+关闭流程开始后同样返回 `503`(见下节):
+
+```json
+{ "ok": false, "db": "shutting-down" }
+```
+
 探针请以 **HTTP 状态码** 判断(200 = 就绪,503 = 未就绪),不要只解析 `ok` 字段。
+
+### 优雅关闭
+
+服务进程监听 `SIGTERM` 与 `SIGINT`,两者触发**同一套**关闭流程(`Ctrl+C` 与
+容器编排下发的停止信号行为一致):
+
+1. 停止接收新连接(`server.close()`,监听端口立即关闭,新连接被拒绝);
+2. 等待在途请求处理完毕。关闭期间 `/healthz` 与 `/api/health` 立即返回
+   `503 { "ok": false, "db": "shutting-down" }`,让负载均衡尽快把流量摘走;
+   空闲的 keep-alive 连接会被主动回收,保证排空在有限时间内结束;
+3. 关闭 SQLite 连接(`store.close()`),清理过期会话的定时器;
+4. 打印一行结构化日志后以**退出码 0** 退出。
+
+```json
+{"event":"server_shutdown_complete","reason":"drained","signal":"SIGTERM","forced":false,"exitCode":0,"inFlightAtStart":1,"drainedRequests":1,"inFlightRemaining":0,"elapsedMs":12,"timeoutMs":10000}
+```
+
+超时与重复信号的处理:
+
+- 排空耗时超过 `SHUTDOWN_TIMEOUT_MS`(默认 `10000` 毫秒)时不再等待,
+  直接强制退出(退出码 `1`),避免进程被容器管理器 `SIGKILL`;
+- 关闭过程中再次收到 `SIGTERM`/`SIGINT` 会**立即**强制退出(退出码 `1`)且不会
+  抛未捕获异常;关闭流程只启动一次,重复信号不会重复进入;
+- 部署时应给容器留出大于 `SHUTDOWN_TIMEOUT_MS` 的停止宽限期,例如
+  `docker stop --time=15` 或 systemd 的 `TimeoutStopSec=15s`。
 
 ### 会话与密码
 
@@ -247,6 +279,7 @@ npm test
 | `test/session.test.js` | 会话生命周期测试(过期 401 / 惰性删除 / 定时清理 / TTL 解析 / expires_at 迁移) |
 | `test/security.test.js` | 安全专项测试(登录/注册限流、密码强度、cookie 会话、安全响应头、CSP、健康检查) |
 | `test/db-write.test.js` | 写路径事务测试(并发配额、withTx 回滚、busy_timeout) |
+| `test/shutdown.test.js` | 优雅关闭测试(SIGTERM 排空、关闭期健康检查 503、超时强制退出、重复信号) |
 
 push 验证 2026-10-16
 PR 创建验证 2026-10-16

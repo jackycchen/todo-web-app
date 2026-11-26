@@ -116,6 +116,19 @@ const RATE_LIMIT_DEFAULTS = Object.freeze({
 // 过期会话的定期清理间隔:默认 1 小时
 const DEFAULT_SESSION_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 
+/** 优雅关闭:等待在途请求排空的最长时间,超时后强制退出。 */
+const DEFAULT_SHUTDOWN_TIMEOUT_MS = 10 * 1000;
+
+/**
+ * 排空期间主动回收空闲 keep-alive 连接。
+ * Node 的 server.close() 只回收「调用那一刻」空闲的连接;在途请求结束后
+ * 变成空闲的连接不会被自动回收,导致 close 回调可能永远不触发。
+ * 因此关闭期间定期调用 closeIdleConnections(),保证回调在有限时间内触发。
+ */
+const DRAIN_SWEEP_INTERVAL_MS = 50;
+
+const SHUTDOWN_SIGNALS = Object.freeze(["SIGTERM", "SIGINT"]);
+
 function hashPassword(password) {
   const salt = crypto.randomBytes(16);
   const derived = crypto.scryptSync(String(password), salt, 64);
@@ -315,17 +328,38 @@ function createApp(options = {}) {
   // 登录失败按「IP|用户名」计数,注册失败按 IP 计数
   const loginFailures = createFailureWindow({ windowMs: rateLimit.windowMs, now });
   const registrationFailures = createFailureWindow({ windowMs: rateLimit.windowMs, now });
+  // 关闭状态由 startServer/setupGracefulShutdown 注入并共享,
+  // 健康检查据此在排空期间返回 503,在途请求计数用于关闭日志。
+  const shutdownState =
+    options.shutdownState && typeof options.shutdownState === "object"
+      ? options.shutdownState
+      : createShutdownState();
 
   const app = express();
   app.locals.store = store;
   app.locals.sessionTtlMs = store.sessionTtlMs || sessionTtlMs;
   app.locals.rateLimit = rateLimit;
+  app.locals.shutdownState = shutdownState;
 
   // 安全响应头必须覆盖 API 与静态资源,因此放在最前面(早于 express.json)。
   app.use((req, res, next) => {
     for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
       res.setHeader(name, value);
     }
+    next();
+  });
+
+  // 统计在途请求:finish 与 close 事件只会让计数减一次。
+  app.use((req, res, next) => {
+    shutdownState.inFlight += 1;
+    let settled = false;
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      shutdownState.inFlight = Math.max(0, shutdownState.inFlight - 1);
+    };
+    res.on("finish", settle);
+    res.on("close", settle);
     next();
   });
 
@@ -357,7 +391,12 @@ function createApp(options = {}) {
 
   // /healthz 与 /api/health 复用同一 handler;探活真实执行一条 SQL,
   // 数据库不可用时返回 503,而不是固定回 ok。
+  // 关闭流程开始后立即返回 503,避免负载均衡在排空期间继续转发流量。
   function healthHandler(req, res) {
+    if (shutdownState.shuttingDown) {
+      res.set("Connection", "close");
+      return res.status(503).json({ ok: false, db: "shutting-down" });
+    }
     try {
       store.ping();
     } catch (err) {
@@ -612,6 +651,323 @@ function createApp(options = {}) {
 }
 
 /**
+ * 关闭状态。由 createApp 共享给健康检查与在途请求计数:
+ *  - shuttingDown: 关闭流程是否已开始(健康检查据此返回 503)
+ *  - inFlight:     当前在途请求数(关闭日志据此记录排空情况)
+ */
+function createShutdownState() {
+  return { shuttingDown: false, inFlight: 0 };
+}
+
+/** 把任意输入规范化为合法的关闭超时;非法值(非正整数)回退默认 10000ms。 */
+function resolveShutdownTimeoutMs(value) {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isSafeInteger(n) || n <= 0) return DEFAULT_SHUTDOWN_TIMEOUT_MS;
+  return n;
+}
+
+/** 从环境变量读取 SHUTDOWN_TIMEOUT_MS,非法值回退默认。 */
+function readShutdownTimeoutMs(env = process.env) {
+  return resolveShutdownTimeoutMs(env && env.SHUTDOWN_TIMEOUT_MS);
+}
+
+/** 单行 JSON 结构化日志;序列化/写入失败不得中断关闭流程。 */
+function logShutdownEvent(logger, payload) {
+  try {
+    logger.log(JSON.stringify(payload));
+  } catch (_) {
+    /* 日志失败不影响关闭 */
+  }
+}
+
+/**
+ * 优雅关闭控制器(可测试,不直接挂信号)。
+ *
+ * beginClose() 的顺序:
+ *   1. 标记 shuttingDown(健康检查立刻 503),记录起始状态
+ *   2. server.close() 停止接收新连接,并由回调等待在途请求结束
+ *   3. 排空期间定期回收空闲 keep-alive 连接,保证回调能在有限时间内触发
+ *   4. 排空完成(或超时)后:关闭 SQLite 连接 → 清理定时器 → 打印一行结构化日志
+ *
+ * 幂等:重复调用 beginClose() 返回同一个 Promise;finish() 只执行一次。
+ *
+ * options:
+ *  - server/store/cleanupTimer/shutdownState: 受管资源
+ *  - timeoutMs: 排空超时,缺省读 SHUTDOWN_TIMEOUT_MS,再缺省 10000
+ *  - logger: 默认 console;exit: 默认 process.exit(仅 forceExit 使用)
+ *  - now: 可注入时钟(测试用)
+ */
+function createShutdownController(options = {}) {
+  const server = options.server;
+  const store = options.store;
+  const cleanupTimer = options.cleanupTimer;
+  const shutdownState =
+    options.shutdownState && typeof options.shutdownState === "object"
+      ? options.shutdownState
+      : createShutdownState();
+  const logger = options.logger || console;
+  const now = typeof options.now === "function" ? options.now : Date.now;
+  const timeoutMs = resolveShutdownTimeoutMs(
+    options.timeoutMs !== undefined ? options.timeoutMs : readShutdownTimeoutMs()
+  );
+  const exit =
+    typeof options.exit === "function" ? options.exit : (code) => process.exit(code);
+
+  let started = false;
+  let finished = false;
+  let storeClosed = false;
+  let drainPromise = null;
+  let timeoutTimer = null;
+  let sweepTimer = null;
+  let startedAt = 0;
+  let inFlightAtStart = 0;
+  let signalName = null;
+  let summary = null;
+
+  function clearTimers() {
+    if (timeoutTimer) {
+      clearTimeout(timeoutTimer);
+      timeoutTimer = null;
+    }
+    if (sweepTimer) {
+      clearInterval(sweepTimer);
+      sweepTimer = null;
+    }
+  }
+
+  function closeStore() {
+    if (storeClosed) return;
+    storeClosed = true;
+    if (!store || typeof store.close !== "function") return;
+    try {
+      store.close();
+    } catch (err) {
+      // 关闭数据库失败不应阻塞进程退出,记录后继续
+      try {
+        logger.error("关闭数据库连接失败:", err);
+      } catch (_) {
+        /* 忽略日志失败 */
+      }
+    }
+  }
+
+  function sweepIdleConnections() {
+    if (typeof server.closeIdleConnections !== "function") return;
+    try {
+      server.closeIdleConnections();
+    } catch (_) {
+      /* 回收失败交给超时兜底 */
+    }
+  }
+
+  /** 完成(或超时强制完成)关闭:释放资源并打印一行结构化日志。 */
+  function finish(forced) {
+    if (finished) return summary;
+    finished = true;
+    clearTimers();
+    if (cleanupTimer) clearInterval(cleanupTimer);
+    // 顺序要求:先等待请求结束,再关闭数据库连接,最后清理定时器。
+    closeStore();
+
+    const elapsedMs = started ? Math.max(0, now() - startedAt) : 0;
+    summary = {
+      forced: !!forced,
+      exitCode: forced ? 1 : 0,
+      signal: signalName,
+      inFlightAtStart,
+      drainedRequests: Math.max(0, inFlightAtStart - shutdownState.inFlight),
+      inFlightRemaining: shutdownState.inFlight,
+      elapsedMs
+    };
+    logShutdownEvent(logger, {
+      event: forced ? "server_shutdown_forced" : "server_shutdown_complete",
+      reason: forced ? "timeout" : "drained",
+      signal: signalName,
+      forced: !!forced,
+      exitCode: summary.exitCode,
+      inFlightAtStart,
+      drainedRequests: summary.drainedRequests,
+      inFlightRemaining: summary.inFlightRemaining,
+      elapsedMs,
+      timeoutMs
+    });
+    return summary;
+  }
+
+  /**
+   * 开始关闭(幂等)。返回 Promise<summary>,不会调用 process.exit,
+   * 便于测试与库调用;进程退出由 setupGracefulShutdown 决定。
+   */
+  function beginClose(meta = {}) {
+    if (drainPromise) return drainPromise;
+    started = true;
+    signalName = meta.signal || null;
+    startedAt = now();
+    inFlightAtStart = shutdownState.inFlight;
+    shutdownState.shuttingDown = true;
+
+    drainPromise = new Promise((resolve) => {
+      const settle = (forced) => resolve(finish(forced));
+
+      timeoutTimer = setTimeout(() => settle(true), timeoutMs);
+      // 超时定时器不单独维持事件循环;排空期间由连接保持进程存活
+      if (typeof timeoutTimer.unref === "function") timeoutTimer.unref();
+
+      if (!server || server.listening === false) {
+        // 未监听或已关闭:没有连接需要排空
+        settle(false);
+        return;
+      }
+      try {
+        server.close(() => settle(false));
+      } catch (_) {
+        settle(false);
+        return;
+      }
+      sweepIdleConnections();
+      sweepTimer = setInterval(sweepIdleConnections, DRAIN_SWEEP_INTERVAL_MS);
+      if (typeof sweepTimer.unref === "function") sweepTimer.unref();
+    });
+    return drainPromise;
+  }
+
+  function isClosing() {
+    return started;
+  }
+
+  /**
+   * 立即强制退出:不等待排空。用于超时兜底与重复信号,
+   * 只打印一行结构化日志后调用 exit,不会抛出未捕获异常。
+   */
+  function forceExit(code, reason) {
+    const exitCode = Number.isSafeInteger(code) ? code : 1;
+    const elapsedMs = started ? Math.max(0, now() - startedAt) : 0;
+    logShutdownEvent(logger, {
+      event: "server_shutdown_forced",
+      reason: reason || "forced",
+      signal: signalName,
+      exitCode,
+      elapsedMs,
+      inFlightRemaining: shutdownState.inFlight
+    });
+    exit(exitCode);
+  }
+
+  return {
+    state: shutdownState,
+    timeoutMs,
+    isClosing,
+    beginClose,
+    forceExit
+  };
+}
+
+/**
+ * 把 SIGTERM/SIGINT 接到同一关闭流程(仅 require.main === module 时挂载):
+ *  - 第一个信号:开始排空,完成日志后以退出码 0 退出;超时则以 1 退出
+ *  - 第二个信号:立即强制退出(退出码 1),不重复进入关闭流程、不抛异常
+ */
+function setupGracefulShutdown(options = {}) {
+  const proc = options.proc || process;
+  const logger = options.logger || console;
+  const signals =
+    Array.isArray(options.signals) && options.signals.length > 0
+      ? options.signals
+      : SHUTDOWN_SIGNALS;
+  const timeoutMs = resolveShutdownTimeoutMs(
+    options.timeoutMs !== undefined ? options.timeoutMs : readShutdownTimeoutMs()
+  );
+  const exit =
+    typeof options.exit === "function" ? options.exit : (code) => proc.exit(code);
+
+  const controller = createShutdownController({
+    server: options.server,
+    store: options.store,
+    cleanupTimer: options.cleanupTimer,
+    shutdownState: options.shutdownState,
+    timeoutMs,
+    logger,
+    now: options.now,
+    exit
+  });
+
+  let exiting = false;
+  let signalReceived = false;
+
+  /**
+   * 先等 stdout 刷新再退出:管道模式下 console.log 是异步写,
+   * 直接 process.exit 可能丢掉最后一行结构化日志。
+   */
+  function exitWhenFlushed(code) {
+    if (exiting) return;
+    exiting = true;
+    const stdout = proc.stdout;
+    if (!stdout || stdout.destroyed || typeof stdout.write !== "function") {
+      exit(code);
+      return;
+    }
+    let done = false;
+    const finishExit = () => {
+      if (done) return;
+      done = true;
+      exit(code);
+    };
+    try {
+      // 空写排在已有日志之后,回调触发说明之前的输出已刷出
+      stdout.write("", finishExit);
+    } catch (_) {
+      finishExit();
+      return;
+    }
+    // 兜底:回调异常缺失时也不能让进程永远不退出
+    const fallback = setTimeout(finishExit, 1000);
+    if (typeof fallback.unref === "function") fallback.unref();
+  }
+
+  function handleSignal(signal) {
+    if (signalReceived) {
+      // 第二次信号:立即强制退出,不等待排空、不重复进入关闭流程
+      controller.forceExit(1, "second_signal");
+      return;
+    }
+    signalReceived = true;
+    logShutdownEvent(logger, {
+      event: "server_shutdown_started",
+      signal,
+      timeoutMs,
+      inFlight: controller.state.inFlight
+    });
+    controller.beginClose({ signal }).then(
+      (summary) => exitWhenFlushed(summary.forced ? 1 : 0),
+      (err) => {
+        try {
+          logger.error("优雅关闭失败:", err && err.stack ? err.stack : err);
+        } catch (_) {
+          /* 忽略日志失败 */
+        }
+        controller.forceExit(1, "shutdown_error");
+      }
+    );
+  }
+
+  const handlers = new Map();
+  for (const signal of signals) {
+    const handler = () => handleSignal(signal);
+    handlers.set(signal, handler);
+    proc.on(signal, handler);
+  }
+
+  return {
+    controller,
+    handleSignal,
+    dispose() {
+      for (const [signal, handler] of handlers) proc.removeListener(signal, handler);
+      handlers.clear();
+    }
+  };
+}
+
+/**
  * 启动会话清理:立即执行一次,之后按 intervalMs 周期执行。
  * 定时器调用 unref(),不阻止进程退出。
  */
@@ -632,9 +988,15 @@ function startSessionCleanup(store, intervalMs = SESSION_CLEANUP_INTERVAL_MS) {
 }
 
 /**
- * 启动服务器。返回 Promise<{ server, app, port }>。
+ * 启动服务器。返回 Promise<{ server, app, port, store, cleanupTimer, close }>。
  * options.port 为 0 时监听随机可用端口(便于测试)。
  * options.cleanupIntervalMs 可覆盖过期会话清理间隔(测试或运维调优用)。
+ * options.shutdownTimeoutMs 可覆盖优雅关闭的排空超时(默认 SHUTDOWN_TIMEOUT_MS / 10000)。
+ *
+ * close() 执行与信号触发的同一套关闭流程,但不调用 process.exit:
+ * 停止接收新连接 → 等待在途请求 → 关闭 SQLite 连接 → 清理定时器,
+ * 返回 Promise<summary>。原有的 server/app/port/store/cleanupTimer 字段保持不变,
+ * 因此现有测试里的 server.close(cb) 用法仍然有效。
  */
 function startServer(options = {}) {
   // 只打开一个数据库连接:先建 store,再交给 createApp 复用
@@ -649,7 +1011,8 @@ function startServer(options = {}) {
           : {})
       }
     );
-  const app = createApp({ ...options, store });
+  const shutdownState = createShutdownState();
+  const app = createApp({ ...options, store, shutdownState });
   // 可注入时钟,便于测试会话过期而无需真实等待
   const clock = typeof options.now === "function" ? options.now : Date.now;
   let port;
@@ -684,7 +1047,27 @@ function startServer(options = {}) {
     const server = app.listen(port, () => {
       const clearCleanup = () => clearInterval(cleanupTimer);
       server.once("close", clearCleanup);
-      resolve({ server, app, port: server.address().port, store, cleanupTimer });
+      const shutdownController = createShutdownController({
+        server,
+        store,
+        cleanupTimer,
+        shutdownState,
+        logger: options.logger || console,
+        timeoutMs:
+          options.shutdownTimeoutMs !== undefined
+            ? options.shutdownTimeoutMs
+            : readShutdownTimeoutMs()
+      });
+      resolve({
+        server,
+        app,
+        port: server.address().port,
+        store,
+        cleanupTimer,
+        shutdownState,
+        shutdownController,
+        close: () => shutdownController.beginClose()
+      });
     });
     server.on("error", (err) => {
       clearInterval(cleanupTimer);
@@ -696,8 +1079,17 @@ function startServer(options = {}) {
 // 直接执行时启动服务器;被 require 时仅暴露工厂(便于测试)
 if (require.main === module) {
   startServer()
-    .then(({ port }) => {
+    .then(({ port, server, store, cleanupTimer, shutdownState }) => {
       console.log(`todo-web-app server running at http://localhost:${port}`);
+      // 只有真实进程才挂信号处理,测试里直接 startServer() 不会被信号影响
+      setupGracefulShutdown({
+        server,
+        store,
+        cleanupTimer,
+        shutdownState,
+        timeoutMs: readShutdownTimeoutMs(),
+        logger: console
+      });
     })
     .catch((err) => {
       console.error("启动服务器失败:", err);
@@ -709,10 +1101,16 @@ module.exports = {
   createApp,
   startServer,
   startSessionCleanup,
+  createShutdownState,
+  createShutdownController,
+  setupGracefulShutdown,
+  resolveShutdownTimeoutMs,
+  readShutdownTimeoutMs,
   hashPassword,
   verifyPassword,
   JSON_BODY_LIMIT,
   DEFAULT_SESSION_TTL_MS,
   MAX_SESSION_TTL_MS,
+  DEFAULT_SHUTDOWN_TIMEOUT_MS,
   resolveSessionTtlMs
 };
