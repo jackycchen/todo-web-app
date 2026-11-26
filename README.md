@@ -118,6 +118,29 @@ npm start
   可通过 `openDb(path, { maxTodosPerUser })` 或
   `startServer({ maxTodosPerUser })` 覆盖(主要便于测试与运维调优)。
 
+#### 写接口限流
+
+- **维度**:按**已鉴权用户**计数(`req.userId`),同一用户的
+  `POST /api/todos`、`PATCH /api/todos/:id`、`DELETE /api/todos/:id`
+  **共用一个桶**;不同用户互不影响。限流中间件位于鉴权之后,未携带
+  有效会话的写请求仍然先返回 `401`,不会被限流掩盖。
+- **阈值**:默认 **60 次 / 60 秒**(滑动窗口),可用环境变量
+  `RATE_LIMIT_WRITE_PER_MIN` 覆盖;非法值(非正整数)或缺失时回退默认 60。
+  也可在 `createApp` / `startServer` 的 `rateLimit.maxWritesPerMinute`
+  中显式指定,显式配置优先于环境变量。
+- **超限响应**:`429` + `Retry-After` 头(整数秒,向上取整,最小 1):
+
+  ```json
+  { "error": "操作过于频繁,请稍后再试", "code": "RATE_LIMITED", "retryAfterMs": 42000 }
+  ```
+
+- **计数时机**:请求通过鉴权后立即计数,再做请求体校验,因此返回
+  `400` / `404` / `409` 的失败写请求同样占用额度,不能靠非法请求绕过限流。
+- **读接口不计数**:`GET /api/todos`、`GET /api/me`、`/healthz`、
+  注册/登录/登出均不接入该限流;写桶超限期间读取仍然返回 `200`。
+- **局限**:与登录/注册限流一样是**进程内内存**实现,重启后清零,
+  多实例之间不共享;需要跨实例一致限流时应放到反向代理或 Redis 层。
+
 ### 增量同步与删除
 
 - 所有写操作(新增、修改、勾选完成、删除)都会刷新 `updatedAt`
@@ -209,8 +232,8 @@ PORT=8080 TODO_DB_PATH=/var/lib/todo/todo.db npm start
 
 ### 已知的部署边界
 
-- 登录/注册限流是**进程内内存**实现,重启后清零,多实例之间也不共享;
-  需要跨实例一致限流时应放到反向代理或 Redis 层。
+- 登录/注册限流与写接口限流都是**进程内内存**实现,重启后清零,
+  多实例之间也不共享;需要跨实例一致限流时应放到反向代理或 Redis 层。
 - 页面通过 `connect-src 'self'` 限定同源请求,若把前端与 API 分域名部署,
   需要同时调整 CSP 与 cookie 的 `SameSite`/`Domain` 配置。
 
@@ -246,6 +269,7 @@ npm test
 | `test/priority.test.js` | 优先级测试(旧库默认值 / SQL 排序 / 增量同步) |
 | `test/session.test.js` | 会话生命周期测试(过期 401 / 惰性删除 / 定时清理 / TTL 解析 / expires_at 迁移) |
 | `test/security.test.js` | 安全专项测试(登录/注册限流、密码强度、cookie 会话、安全响应头、CSP、健康检查) |
+| `test/rate-limit-write.test.js` | 写接口限流测试(按用户计数 / 跨方法共用桶 / 窗口恢复 / GET 不计数 / 401 优先 / env 覆盖与非法回退) |
 | `test/db-write.test.js` | 写路径事务测试(并发配额、withTx 回滚、busy_timeout) |
 
 push 验证 2026-10-16

@@ -105,12 +105,16 @@ const SECURITY_HEADERS = Object.freeze({
 
 const SESSION_COOKIE_NAME = "todo_sid";
 
-/** 限流默认值:窗口 60s,登录同 IP+用户名 5 次失败,注册同 IP 10 次失败。 */
+/**
+ * 限流默认值:窗口 60s,登录同 IP+用户名 5 次失败,注册同 IP 10 次失败,
+ * 写操作(已鉴权用户,POST/PATCH/DELETE /api/todos 合计)60 次。
+ */
 const RATE_LIMIT_DEFAULTS = Object.freeze({
   enabled: true,
   windowMs: 60 * 1000,
   maxLoginFailures: 5,
-  maxRegistrations: 10
+  maxRegistrations: 10,
+  maxWritesPerMinute: 60
 });
 
 // 过期会话的定期清理间隔:默认 1 小时
@@ -222,6 +226,10 @@ function resolveRateLimitConfig(overrides) {
     maxRegistrations: normalizePositiveInt(
       src.maxRegistrations,
       RATE_LIMIT_DEFAULTS.maxRegistrations
+    ),
+    maxWritesPerMinute: normalizePositiveInt(
+      src.maxWritesPerMinute,
+      RATE_LIMIT_DEFAULTS.maxWritesPerMinute
     )
   };
 }
@@ -311,10 +319,22 @@ function createApp(options = {}) {
   const staticDir = options.staticDir || __dirname;
   // 可注入时钟,便于测试会话过期/限流窗口推进而无需真实等待
   const now = typeof options.now === "function" ? options.now : Date.now;
-  const rateLimit = resolveRateLimitConfig(options.rateLimit);
+  // 写接口阈值:显式 options 优先;未显式指定时才读 RATE_LIMIT_WRITE_PER_MIN
+  // (非法/缺失回退默认,合法值必须为正整数)。不影响其它限流项的解析语义。
+  const rateLimitOverrides =
+    options.rateLimit && typeof options.rateLimit === "object" ? { ...options.rateLimit } : {};
+  if (rateLimitOverrides.maxWritesPerMinute === undefined) {
+    const envWrites = Number(process.env.RATE_LIMIT_WRITE_PER_MIN);
+    if (Number.isSafeInteger(envWrites) && envWrites > 0) {
+      rateLimitOverrides.maxWritesPerMinute = envWrites;
+    }
+  }
+  const rateLimit = resolveRateLimitConfig(rateLimitOverrides);
   // 登录失败按「IP|用户名」计数,注册失败按 IP 计数
   const loginFailures = createFailureWindow({ windowMs: rateLimit.windowMs, now });
   const registrationFailures = createFailureWindow({ windowMs: rateLimit.windowMs, now });
+  // 写操作按已鉴权用户计数,POST/PATCH/DELETE /api/todos 共用同一个桶
+  const writeAttempts = createFailureWindow({ windowMs: rateLimit.windowMs, now });
 
   const app = express();
   app.locals.store = store;
@@ -352,6 +372,20 @@ function createApp(options = {}) {
     req.userId = user.id;
     req.username = user.username;
     req.token = token;
+    next();
+  }
+
+  /**
+   * 写接口限流(必须置于 auth 之后,因此未鉴权请求仍先返回 401)。
+   * 已鉴权用户共用一个桶,GET 不接入。计数发生在校验请求体之前,
+   * 所以 400/404/409 等失败写请求同样占用额度,避免靠非法请求绕过限流。
+   */
+  function rateLimitWrite(req, res, next) {
+    if (!rateLimit.enabled) return next();
+    const key = "write|" + req.userId;
+    const verdict = writeAttempts.check(key, rateLimit.maxWritesPerMinute);
+    if (verdict.limited) return sendRateLimited(res, verdict.retryAfterMs);
+    writeAttempts.record(key);
     next();
   }
 
@@ -500,7 +534,7 @@ function createApp(options = {}) {
     res.json(store.getTodos(req.userId));
   });
 
-  app.post("/api/todos", auth, (req, res) => {
+  app.post("/api/todos", auth, rateLimitWrite, (req, res) => {
     const body = req.body || {};
     const parsed = parseTodoText(body.text);
     if (parsed.error) {
@@ -538,7 +572,7 @@ function createApp(options = {}) {
     }
   });
 
-  app.patch("/api/todos/:id", auth, (req, res) => {
+  app.patch("/api/todos/:id", auth, rateLimitWrite, (req, res) => {
     const body = req.body || {};
     const patch = {};
     if (body.text !== undefined) {
@@ -559,7 +593,7 @@ function createApp(options = {}) {
     res.json(updated);
   });
 
-  app.delete("/api/todos/:id", auth, (req, res) => {
+  app.delete("/api/todos/:id", auth, rateLimitWrite, (req, res) => {
     const removed = store.deleteTodo(req.userId, req.params.id);
     if (!removed) return res.status(404).json({ error: "待办不存在" });
     res.status(204).end();
