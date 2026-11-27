@@ -117,6 +117,16 @@ test("新建待办不把客户端 id / createdAt 提交给服务端", async () =
   assert.deepEqual(body, { text: "写写", completed: true });
 });
 
+test("restoreTodo 以 POST 调用 /api/todos/<id>/restore 并携带 same-origin cookie", async () => {
+  global.__response = jsonResponse(200, { id: "a b", text: "写写", deleted: false });
+  const data = await TodoApi.restoreTodo("a b");
+  assert.equal(data.deleted, false);
+  const call = fetchCalls[0];
+  assert.equal(call.url, "http://test/api/todos/a%20b/restore");
+  assert.equal(call.init.method, "POST");
+  assert.equal(call.init.credentials, "same-origin");
+});
+
 test("登出时即使服务端失败也会清除会话标志", async () => {
   global.__response = jsonResponse(200, { username: "alice" });
   await TodoApi.login("alice", "secret1234567");

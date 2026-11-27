@@ -86,8 +86,16 @@ npm start
 | POST | `/api/todos` | 新建待办,body `{ text, completed?, priority? }`(需鉴权) |
 | PATCH | `/api/todos/:id` | 更新待办,body `{ text?, completed?, priority? }`(需鉴权) |
 | DELETE | `/api/todos/:id` | 删除待办(软删除,需鉴权) |
+| POST | `/api/todos/:id/restore` | 撤销删除:恢复当前用户自己的墓碑(需鉴权)。不存在/他人 `404`;未删除 `409 code=NOT_DELETED`;恢复后超出配额 `409 code=TODO_QUOTA_EXCEEDED` |
 
 待办项数据结构:`{ id, text, completed, priority, createdAt, updatedAt, deleted }`。
+
+撤销删除说明:删除是软删除(写入 `deleted=1` 墓碑),`POST /api/todos/:id/restore`
+把 `deleted` 置回 `0` 并刷新 `updatedAt`(进程内单调递增),条目因此会出现在
+`GET /api/todos?since=<删除前游标>` 的增量结果里,其他端可同步到恢复。
+恢复计入单用户未删除配额;配额已满时保持墓碑状态并返回 409。
+前端在删除成功后显示「已删除 · 撤销」提示,窗口由 `window.TODO_UNDO_WINDOW_MS`
+控制(默认 5000ms),连续删除只保留最近一条的撤销入口。
 
 优先级 `priority` 取值为整数 `0`(低)/ `1`(普通)/ `2`(高),新待办默认 `1`。
 之所以用数值而不是字符串,是因为排序可以直接在 SQL 中完成

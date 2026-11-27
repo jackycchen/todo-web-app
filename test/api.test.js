@@ -839,3 +839,167 @@ test("重复 q 参数(数组)返回 400", async () => {
   const res = await get("/api/todos?q=a&q=b", token);
   assert.equal(res.status, 400);
 });
+
+/* ---------- 撤销删除(POST /api/todos/:id/restore) ---------- */
+
+test("恢复自己的墓碑返回完整条目、刷新 updatedAt,且增量与全量都能拉到", async () => {
+  const token = await ensureUser("restore_ok", "secret1234567");
+  const created = (await createTodo(token, "需要恢复的任务")).data;
+  await patch(`/api/todos/${created.id}`, { completed: true, priority: 2 }, token);
+  const original = (await (await get("/api/todos", token)).json()).find(
+    (t) => t.id === created.id
+  );
+
+  const delRes = await del(`/api/todos/${created.id}`, token);
+  assert.equal(delRes.status, 204);
+
+  // 取删除墓碑的 updatedAt 作为恢复后的增量游标
+  const tombstone = (await (
+    await get(`/api/todos?since=${original.updatedAt}`, token)
+  ).json()).find((t) => t.id === created.id);
+  assert.ok(tombstone && tombstone.deleted === true);
+
+  const restoreRes = await post(`/api/todos/${created.id}/restore`, {}, token);
+  assert.equal(restoreRes.status, 200);
+  const restored = await restoreRes.json();
+
+  assert.equal(restored.id, original.id);
+  assert.equal(restored.text, original.text);
+  assert.equal(restored.completed, true);
+  assert.equal(restored.priority, 2);
+  assert.equal(restored.createdAt, original.createdAt);
+  assert.equal(restored.deleted, false);
+  assert.ok(
+    restored.updatedAt > tombstone.updatedAt,
+    "恢复必须刷新 updatedAt,否则其他端拉不到"
+  );
+
+  // 其他端从墓碑时间点增量拉取,能看到恢复后的活条目
+  const changes = await (await get(`/api/todos?since=${tombstone.updatedAt}`, token)).json();
+  const synced = changes.find((t) => t.id === created.id);
+  assert.ok(synced, "恢复后的条目应出现在增量结果中");
+  assert.equal(synced.deleted, false);
+  assert.equal(synced.updatedAt, restored.updatedAt);
+
+  // 全量列表也重新包含它
+  const full = await (await get("/api/todos", token)).json();
+  assert.ok(full.some((t) => t.id === created.id));
+
+  // 重复恢复同一活条目:409 NOT_DELETED,数据不被修改
+  const again = await post(`/api/todos/${created.id}/restore`, {}, token);
+  assert.equal(again.status, 409);
+  assert.equal((await again.json()).code, "NOT_DELETED");
+});
+
+test("恢复他人条目或不存在的 id 返回 404,且不泄露/不修改他人数据", async () => {
+  const aliceToken = await ensureUser("restore_owner", "secret1234567");
+  const bobToken = await ensureUser("restore_intruder", "secret1234567");
+  const item = (await createTodo(aliceToken, "alice 的待办")).data;
+  assert.equal((await del(`/api/todos/${item.id}`, aliceToken)).status, 204);
+
+  // 他人尝试恢复:与不存在同样返回 404,不暴露 id 是否存在
+  const foreign = await post(`/api/todos/${item.id}/restore`, {}, bobToken);
+  assert.equal(foreign.status, 404);
+  assert.equal((await foreign.json()).error, "待办不存在");
+
+  // alice 的条目仍然是墓碑
+  const aliceFull = await (await get("/api/todos", aliceToken)).json();
+  assert.ok(!aliceFull.some((t) => t.id === item.id));
+
+  const missing = await post("/api/todos/does-not-exist/restore", {}, aliceToken);
+  assert.equal(missing.status, 404);
+  assert.equal((await missing.json()).error, "待办不存在");
+
+  // 恢复接口需要鉴权
+  const noAuth = await post(`/api/todos/${item.id}/restore`, {});
+  assert.equal(noAuth.status, 401);
+});
+
+test("恢复未删除的活条目返回 409 NOT_DELETED 且数据不变", async () => {
+  const token = await ensureUser("restore_active", "secret1234567");
+  const item = (await createTodo(token, "还活着的任务")).data;
+
+  const res = await post(`/api/todos/${item.id}/restore`, {}, token);
+  assert.equal(res.status, 409);
+  const body = await res.json();
+  assert.equal(body.code, "NOT_DELETED");
+
+  const full = await (await get("/api/todos", token)).json();
+  const unchanged = full.find((t) => t.id === item.id);
+  assert.ok(unchanged);
+  assert.equal(unchanged.updatedAt, item.updatedAt, "失败的恢复不应修改数据");
+});
+
+test("恢复导致未删除条目超过配额时返回 409 TODO_QUOTA_EXCEEDED,条目仍为墓碑", async () => {
+  const quotaDb = path.join(os.tmpdir(), `todo-restore-quota-${process.pid}-${Date.now()}.db`);
+  const started = await startServer({
+    dbPath: quotaDb,
+    port: 0,
+    staticDir: path.join(__dirname, ".."),
+    maxTodosPerUser: 2,
+  });
+  const qbase = `http://127.0.0.1:${started.port}`;
+  const call = (method, pathname, body, token) => {
+    const headers = {};
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+    if (token) headers.Authorization = "Bearer " + token;
+    return fetch(qbase + pathname, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  };
+
+  try {
+    const reg = await call("POST", "/api/register", {
+      username: "restore_quota",
+      password: "secret1234567",
+    });
+    const { token } = await reg.json();
+
+    const first = await (await call("POST", "/api/todos", { text: "配额一" }, token)).json();
+    const second = await (await call("POST", "/api/todos", { text: "配额二" }, token)).json();
+    assert.ok(first.id && second.id);
+
+    // 删除一条释放额度,再用新条目把额度占满
+    assert.equal(
+      (await call("DELETE", "/api/todos/" + second.id, undefined, token)).status,
+      204
+    );
+    const third = await call("POST", "/api/todos", { text: "配额三" }, token);
+    assert.equal(third.status, 201);
+    assert.equal((await third.json()).text, "配额三");
+
+    // 此时恢复第二条会突破配额
+    const restore = await call("POST", `/api/todos/${second.id}/restore`, {}, token);
+    assert.equal(restore.status, 409);
+    const body = await restore.json();
+    assert.equal(body.code, "TODO_QUOTA_EXCEEDED");
+    assert.equal(body.limit, 2);
+
+    // 条目仍为墓碑:未删除列表里没有它
+    const list = await (await call("GET", "/api/todos", undefined, token)).json();
+    assert.equal(list.length, 2);
+    assert.ok(!list.some((t) => t.id === second.id));
+
+    // 墓碑依然存在(可被 since 拉到 deleted:true),重复删除因此仍为 404
+    const tombstone = (
+      await (await call("GET", "/api/todos?since=0", undefined, token)).json()
+    ).find((t) => t.id === second.id);
+    assert.ok(tombstone);
+    assert.equal(tombstone.deleted, true);
+    assert.equal(
+      (await call("DELETE", "/api/todos/" + second.id, undefined, token)).status,
+      404
+    );
+  } finally {
+    await new Promise((resolve) => started.server.close(resolve));
+    for (const suffix of ["", "-wal", "-shm"]) {
+      try {
+        fs.unlinkSync(quotaDb + suffix);
+      } catch (_) {
+        /* 忽略清理失败 */
+      }
+    }
+  }
+});

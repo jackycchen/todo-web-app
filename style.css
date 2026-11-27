@@ -352,6 +352,51 @@ body {
   display: none;
 }
 
+/* 删除撤销提示:与 clear-status 一样用 role=status 播报,视觉上更醒目便于点击 */
+.undo-toast {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 auto 16px;
+  padding: 10px 16px;
+  width: fit-content;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: var(--shadow);
+}
+
+.undo-toast[hidden] {
+  display: none;
+}
+
+.undo-toast-text {
+  color: var(--text-muted, var(--text));
+}
+
+.undo-btn {
+  padding: 4px 14px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--primary);
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.undo-btn:hover {
+  background: var(--primary-hover);
+}
+
+.undo-btn:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
 /* 列表 */
 .todo-list {
   list-style: none;
