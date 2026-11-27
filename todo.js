@@ -926,8 +926,8 @@
    */
   function showUndoToast(id) {
     undoId = id;
-    // 文案固定为「已删除 · 撤销」:正文在 span 上,按钮保持可点击
-    if (undoText) undoText.textContent = "已删除";
+    // 文案固定为「已删除 · 撤销」:正文与分隔符在 span 上,按钮保持可点击
+    if (undoText) undoText.textContent = "已删除 ·";
     if (undoBar) undoBar.hidden = false;
     if (undoTimer != null) window.clearTimeout(undoTimer);
     undoTimer = window.setTimeout(function () {

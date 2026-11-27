@@ -1364,6 +1364,11 @@ test("撤销删除:删除后显示提示,点击撤销在当前筛选/排序下�
   assert.deepEqual(renderedItems().map((i) => i.text), ["撤销甲", "撤销丙"]);
   assert.equal(getElement("undo-toast").hidden, false, "删除后应显示撤销提示");
   assert.match(getElement("undo-toast-text").textContent, /已删除/);
+  assert.match(
+    getElement("undo-toast-text").textContent,
+    /已删除\s*·/,
+    "提示文案应为「已删除 · 撤销」"
+  );
 
   // 点击撤销:条目回到列表,当前筛选/排序不被重置
   getElement("undo-btn").handlers.click[0]();
