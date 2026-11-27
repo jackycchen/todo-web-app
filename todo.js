@@ -32,6 +32,17 @@
       : 4000;
 
   /**
+   * 删除撤销提示的窗口(ms):默认 5000,可通过 window.TODO_UNDO_WINDOW_MS 覆盖。
+   * 在展示时动态读取,便于测试按用例调整窗口且无需重新加载脚本。
+   */
+  var DEFAULT_UNDO_WINDOW_MS = 5000;
+
+  function getUndoWindowMs() {
+    var configured = typeof window !== "undefined" ? Number(window.TODO_UNDO_WINDOW_MS) : NaN;
+    return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_UNDO_WINDOW_MS;
+  }
+
+  /**
    * 长列表分页大小:默认每页 20 条,可通过 window.TODO_PAGE_SIZE 覆盖(测试用)。
    * 列表只渲染当前页,DOM 中不会出现全部条目,超长列表滚动更流畅。
    */
@@ -104,6 +115,15 @@
   var clearStatusTimer = null;
 
   /**
+   * 删除撤销状态。同时只保留最近一次删除:
+   *  - undoId   :可撤销的待办 id(null 表示没有可撤销的删除)
+   *  - undoTimer:自动收起提示的定时器
+   * 连续删除会复用同一个提示节点,只重置计时器与 undoId,不会堆叠多个提示。
+   */
+  var undoId = null;
+  var undoTimer = null;
+
+  /**
    * 当前编辑态:{ id, value, selectionStart, selectionEnd, composing }。
    * 保存在模块级而非 DOM 上,以便轮询/保存引起的整表重绘后,
    * 仍能恢复输入框与用户尚未提交的内容。
@@ -152,6 +172,9 @@
   var clearCompletedBtn = document.getElementById("clear-completed-btn");
   var clearStatus = document.getElementById("clear-status");
   var searchInput = document.getElementById("todo-search");
+  var undoBar = document.getElementById("undo-toast");
+  var undoText = document.getElementById("undo-toast-text");
+  var undoBtn = document.getElementById("undo-btn");
 
   /* ---------- 认证 ---------- */
 
@@ -169,6 +192,8 @@
     stopPolling();
     resetClearConfirm(false);
     hideClearStatus();
+    // 登出/会话失效后不应保留上一个账号的撤销入口
+    resetUndo();
     resetSearchState();
     // 退出登录后不应在下次进入时恢复上一次的编辑态
     editState = null;
@@ -180,7 +205,8 @@
     authView.hidden = true;
     appView.hidden = false;
     if (currentUser) currentUser.textContent = username || "";
-    // 切换账号后不应沿用上一账号的搜索条件与结果
+    // 切换账号后不应沿用上一账号的搜索条件、结果与撤销入口
+    resetUndo();
     resetSearchState();
     return loadTodos().then(function (items) {
       startPolling();
@@ -457,6 +483,10 @@
           removeLastSyncedItem(remote.id);
           return;
         }
+        // 本地版本比墓碑更新(例如刚撤销删除):忽略这条过期墓碑。
+        // 不能走到下面的 removeLastSyncedItem/needPush:否则会把已恢复的
+        // 条目当成「本地新建」重新提交,产生重复条目。
+        if ((local.updatedAt || 0) > remoteUpdatedAt) return;
         // 本地有未提交改动时先提交,避免轮询打断正在进行的操作
         if (hasUnsyncedChanges(local)) {
           needPush = true;
@@ -878,6 +908,115 @@
     }
   }
 
+  /* ---------- 删除撤销 ---------- */
+
+  /** 收起撤销提示并清空可撤销的 id(定时器、登出、切换账号时调用) */
+  function resetUndo() {
+    if (undoTimer != null) {
+      window.clearTimeout(undoTimer);
+      undoTimer = null;
+    }
+    undoId = null;
+    if (undoBar) undoBar.hidden = true;
+  }
+
+  /**
+   * 显示单例撤销提示。连续删除时复用同一节点:
+   * 只把 undoId 换成最新删除的条目并重置计时器,不会堆叠多个提示。
+   */
+  function showUndoToast(id) {
+    undoId = id;
+    // 文案固定为「已删除 · 撤销」:正文在 span 上,按钮保持可点击
+    if (undoText) undoText.textContent = "已删除";
+    if (undoBar) undoBar.hidden = false;
+    if (undoTimer != null) window.clearTimeout(undoTimer);
+    undoTimer = window.setTimeout(function () {
+      undoTimer = null;
+      // 窗口到期:提示消失,且此后点击不再发起恢复请求
+      undoId = null;
+      if (undoBar) undoBar.hidden = true;
+    }, getUndoWindowMs());
+    if (undoTimer && typeof undoTimer.unref === "function") undoTimer.unref();
+  }
+
+  /**
+   * 把服务端返回的已恢复条目并回本地列表。
+   * 同时写入 lastSynced 并推进 lastSyncAt,这样:
+   *  - 下一次增量轮询不会把它当成本地新建重复提交
+   *  - 在途轮询带回删除时的旧墓碑时,applyRemoteChanges 的
+   *    「本地更新则忽略」规则会挡掉它
+   */
+  function mergeRestoredItem(serverItem) {
+    if (!serverItem || typeof serverItem.id !== "string") return;
+    var item = {
+      id: serverItem.id,
+      text: typeof serverItem.text === "string" ? serverItem.text : "",
+      completed: !!serverItem.completed,
+      priority: core.normalizePriority(serverItem.priority),
+      createdAt: serverItem.createdAt,
+      updatedAt: serverItem.updatedAt
+    };
+    trackUpdatedAt(item.updatedAt);
+    setLastSyncedItem(item);
+
+    var idx = findTodoIndex(item.id);
+    if (idx >= 0) todos[idx] = item;
+    else todos.push(item);
+    todos = core.sortTodos(todos);
+
+    // 搜索态下数据源是搜索结果快照:同步投影,保证撤销后立即可见,
+    // 随后 write 后的重新检索会再做一次权威校准。
+    if (isSearching()) {
+      var searchIdx = -1;
+      for (var i = 0; i < searchResults.length; i++) {
+        if (searchResults[i].id === item.id) {
+          searchIdx = i;
+          break;
+        }
+      }
+      if (searchIdx >= 0) searchResults[searchIdx] = item;
+      else searchResults.push(item);
+    }
+
+    // 保持当前筛选与已加载页;仅当条目落在已加载范围之外时补足到能看见它
+    ensureTodoVisible(item.id);
+    render();
+  }
+
+  /**
+   * 撤销最近一次删除。
+   *
+   * 恢复请求必须排在本次 DELETE 之后(否则会先拿到 404 NOT_DELETED,或更糟:
+   * DELETE 落地后把刚恢复的条目再次删除),因此复用同一个串行 saveQueue;
+   * 期间占用 saveInFlight,让 5 秒增量轮询暂停,避免互相覆盖。
+   */
+  function undoDelete() {
+    if (!api || undoId == null) return Promise.resolve();
+    var id = undoId;
+    // 先收起提示:一次删除只允许撤销一次,重复点击不会重复发请求
+    resetUndo();
+
+    saveInFlight += 1;
+    saveQueue = saveQueue
+      .then(function () {
+        return api.restoreTodo(id);
+      })
+      .then(function (serverItem) {
+        if (!isLoggedIn()) return;
+        mergeRestoredItem(serverItem);
+      })
+      .catch(function (err) {
+        console.error("撤销删除失败:", err);
+        // 恢复失败(条目已被永久清理/配额已满等):以服务端为准重新加载
+        if (isLoggedIn()) loadTodos();
+      })
+      .then(function () {
+        saveInFlight -= 1;
+        if (isSearching()) runSearch(searchKeyword, true);
+      });
+    return saveQueue;
+  }
+
   function updateEmptyState(visibleCount) {
     if (visibleCount > 0) {
       emptyState.hidden = true;
@@ -1075,6 +1214,8 @@
     todos = next;
     saveTodos();
     render();
+    // 删除成功后提供一次撤销入口(批量「清除已完成」不在撤销范围内)
+    showUndoToast(id);
   }
 
   function clearCompleted() {
@@ -1471,6 +1612,12 @@
 
   if (clearCompletedBtn) {
     clearCompletedBtn.addEventListener("click", onClearCompletedClick);
+  }
+
+  if (undoBtn) {
+    undoBtn.addEventListener("click", function () {
+      undoDelete();
+    });
   }
 
   if (loadMoreBtn) {

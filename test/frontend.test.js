@@ -1348,3 +1348,125 @@ test("搜索 × 排序组合:搜索结果同样跟随排序方向,且切排序�
   sortBtns[0].handlers.click[0]();
   assert.equal(sortBtns[0].getAttribute("aria-pressed"), "true");
 });
+
+/* ---------- 删除撤销 ---------- */
+
+test("撤销删除:删除后显示提示,点击撤销在当前筛选/排序下恢复条目", async () => {
+  await registerAndSeed("undo_flow", ["撤销甲", "撤销乙", "撤销丙"]);
+  filterBtns[0].handlers.click[0](); // 全部
+  sortBtns[0].handlers.click[0](); // 高→低(默认)
+
+  assert.equal(getElement("undo-toast").hidden, true, "初始不显示撤销提示");
+
+  clickDelete(1); // 删除「撤销乙」
+  await flush();
+
+  assert.deepEqual(renderedItems().map((i) => i.text), ["撤销甲", "撤销丙"]);
+  assert.equal(getElement("undo-toast").hidden, false, "删除后应显示撤销提示");
+  assert.match(getElement("undo-toast-text").textContent, /已删除/);
+
+  // 点击撤销:条目回到列表,当前筛选/排序不被重置
+  getElement("undo-btn").handlers.click[0]();
+  await flushLong();
+
+  assert.deepEqual(
+    renderedItems().map((i) => i.text),
+    ["撤销甲", "撤销乙", "撤销丙"],
+    "撤销后条目应按当前排序回到列表"
+  );
+  assert.equal(getElement("undo-toast").hidden, true, "撤销后提示应消失");
+  assert.equal(filterBtns[0].getAttribute("aria-selected"), "true", "筛选未被重置");
+  assert.equal(sortBtns[0].getAttribute("aria-pressed"), "true", "排序未被重置");
+  assert.equal(getElement("stats-total").textContent, "3");
+
+  // 服务端是「恢复」而不是重复新建:同一条待办只有一份
+  const serverList = await (await fetch(`${base}/api/todos`)).json();
+  assert.equal(serverList.length, 3);
+  assert.equal(serverList.filter((t) => t.text === "撤销乙").length, 1);
+
+  // 跨过多轮 5 秒轮询(测试间隔已缩短):增量同步不得把恢复项再次移除
+  await new Promise((r) => setTimeout(r, 450));
+  assert.deepEqual(
+    renderedItems().map((i) => i.text),
+    ["撤销甲", "撤销乙", "撤销丙"],
+    "恢复后的条目不应被轮询带回的旧墓碑移除"
+  );
+});
+
+test("撤销删除:窗口超时后提示自动消失,之后点击不再发起恢复", async () => {
+  await registerAndSeed("undo_timeout", ["超时任务"]);
+  filterBtns[0].handlers.click[0]();
+
+  window.TODO_UNDO_WINDOW_MS = 80;
+  try {
+    clickDelete(0);
+    // 提示在删除时同步出现(窗口很短,这里不等 flush 以免已经超时)
+    assert.equal(getElement("undo-toast").hidden, false);
+    assert.match(getElement("undo-toast-text").textContent, /已删除/);
+
+    await new Promise((r) => setTimeout(r, 260));
+    assert.equal(getElement("undo-toast").hidden, true, "窗口到期后提示应自动消失");
+
+    // 超时后点击不再发起恢复:列表与server端都保持删除状态
+    getElement("undo-btn").handlers.click[0]();
+    await new Promise((r) => setTimeout(r, 200));
+
+    assert.equal(getElement("todo-list").children.length, 0);
+    const serverList = await (await fetch(`${base}/api/todos`)).json();
+    assert.equal(serverList.length, 0, "超时后的点击不应恢复任何条目");
+  } finally {
+    window.TODO_UNDO_WINDOW_MS = 5000;
+  }
+});
+
+test("撤销删除:连续删除只保留一条提示,撤销仅恢复最近一条", async () => {
+  await registerAndSeed("undo_stack", ["连续一", "连续二", "连续三"]);
+  filterBtns[0].handlers.click[0]();
+  sortBtns[0].handlers.click[0]();
+
+  // 不等待中间结果,连续删除两条:第二次删除应复用同一个提示节点
+  clickDelete(0); // 连续一
+  clickDelete(0); // 连续二
+  await flush();
+
+  assert.deepEqual(renderedItems().map((i) => i.text), ["连续三"]);
+  assert.equal(getElement("undo-toast").hidden, false, "连续删除后只保留一个提示");
+  assert.match(getElement("undo-toast-text").textContent, /已删除/);
+
+  getElement("undo-btn").handlers.click[0]();
+  await flushLong();
+
+  // 只恢复最近删除的「连续二」,更早删除的「连续一」保持墓碑
+  assert.deepEqual(renderedItems().map((i) => i.text), ["连续二", "连续三"]);
+  const serverList = await (await fetch(`${base}/api/todos`)).json();
+  assert.deepEqual(
+    serverList.map((t) => t.text).sort(),
+    ["连续二", "连续三"].sort(),
+    "撤销只作用于最近一次删除"
+  );
+  assert.ok(!serverList.some((t) => t.text === "连续一"));
+  assert.equal(getElement("undo-toast").hidden, true);
+});
+
+test("撤销删除:登出后清理撤销入口,点击不再发起恢复请求", async () => {
+  await registerAndSeed("undo_logout", ["登出前删除"]);
+  filterBtns[0].handlers.click[0]();
+
+  clickDelete(0);
+  await flush();
+  assert.equal(getElement("undo-toast").hidden, false);
+
+  getElement("logout-btn").handlers.click[0]();
+  await flush();
+  assert.equal(getElement("undo-toast").hidden, true, "登出后应清理撤销入口");
+
+  const calls = await recordFetch(async () => {
+    getElement("undo-btn").handlers.click[0]();
+    await new Promise((r) => setTimeout(r, 150));
+  });
+  assert.equal(
+    calls.filter((url) => url.includes("/restore")).length,
+    0,
+    "登出后的撤销点击不应发起恢复请求"
+  );
+});

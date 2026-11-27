@@ -137,6 +137,10 @@
     },
     deleteTodo: function (id) {
       return del("/api/todos/" + encodeURIComponent(id));
+    },
+    /** 撤销删除:恢复软删除的待办,成功时返回完整条目 */
+    restoreTodo: function (id) {
+      return post("/api/todos/" + encodeURIComponent(id) + "/restore", {});
     }
   };
 

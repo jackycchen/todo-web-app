@@ -565,6 +565,39 @@ function createApp(options = {}) {
     res.status(204).end();
   });
 
+  /**
+   * 恢复软删除的待办(撤销删除)。
+   *  - 不存在或属于其他用户:404 { error },不区分两者,避免泄露他人 id 是否存在
+   *  - 存在且未删除:409 { error, code: "NOT_DELETED" },数据不变
+   *  - 恢复后未删除条目数超过配额:409 { error, code: "TODO_QUOTA_EXCEEDED", limit },
+   *    条目保持墓碑状态(事务回滚)
+   *  - 成功:200 返回完整的 rowToItem 形状(deleted=false,updatedAt 已刷新)
+   */
+  app.post("/api/todos/:id/restore", auth, (req, res) => {
+    let result;
+    try {
+      result = store.restoreTodo(req.userId, req.params.id);
+    } catch (err) {
+      if (err instanceof TodoQuotaExceededError) {
+        return res.status(409).json({
+          error: err.message,
+          code: err.code,
+          limit: err.limit
+        });
+      }
+      throw err;
+    }
+
+    if (result.ok) return res.json(result.item);
+    if (result.reason === "NOT_DELETED") {
+      return res.status(409).json({
+        error: "待办未删除,无需恢复",
+        code: "NOT_DELETED"
+      });
+    }
+    return res.status(404).json({ error: "待办不存在" });
+  });
+
   // ---------- 静态文件(仅托管白名单内的前端资源) ----------
   // 采用白名单而非排除法: 不在 STATIC_ASSETS 中的路径直接 404,
   // express.static 永远看不到它们,后续新增的源码/测试/配置文件默认不暴露。
